@@ -41,18 +41,18 @@ configs:
 
 # USearch Molecules
 
-7'132'507'184 small molecules with 2D fingerprints, 3D conformers and shape descriptors, indexed for real-time similarity search.
+7'132'507'173 small molecules with 2D fingerprints, 3D conformers and shape descriptors, indexed for real-time similarity search.
 
 Start with `example`: 2 million molecules drawn from all three sources, 4 GB, carrying everything the larger subsets do.
 
 | Config    |     Molecules | Source                                   |
 | :-------- | ------------: | :--------------------------------------- |
 | `example` |     2'000'000 | drawn from the three below, not additive |
-| `pubchem` |   115'627'267 | NCBI PubChem                             |
+| `pubchem` |   115'627'256 | NCBI PubChem                             |
 | `gdb13`   |   977'468'267 | University of Bern GDB13                 |
 | `real`    | 6'039'411'650 | Enamine REAL                             |
 
-Each subset has a `-3d` companion config holding three conformers per molecule.
+Each subset has a `-3d` companion config holding up to three conformers per molecule, row for row with its fingerprints.
 
 Enamine REAL is the exception on this mirror: its conformers are here and still growing, while its fingerprint shards live on the S3 mirrors rather than the Hub.
 
@@ -67,7 +67,7 @@ molecules = pq.read_table("data/example/parquet/0000000000-0001000000.parquet")
 geometry = pq.read_table("data/example/parquet/0000000000-0001000000.3D.parquet")
 ```
 
-The `datasets` library loads the `-3d` configs, but not the fingerprint ones: MACCS, ECFP4, FCFP4 and PubChem are stored as `fixed_size_binary`, which has no `datasets` dtype equivalent.
+The `datasets` library loads both families, with the key and the fingerprints as `fixed_size_binary` values:
 
 ```python
 from datasets import load_dataset
@@ -83,33 +83,38 @@ Fingerprint configs carry one row per molecule:
 
 | Column    | Type          | Description                                             |
 | :-------- | :------------ | :------------------------------------------------------ |
+| `key`     | `binary(16)`  | Compound identity, an InChIKey-derived UUIDv8           |
 | `smiles`  | `utf8`        | Canonical graph: atoms, bonds, charges, stereochemistry |
 | `maccs`   | `binary(21)`  | MACCS structural keys, 166 bits                         |
-| `pubchem` | `binary(111)` | PubChem substructure fingerprint, 881 bits              |
 | `ecfp4`   | `binary(256)` | Extended-connectivity fingerprint, radius 2, 2048 bits  |
 | `fcfp4`   | `binary(256)` | Functional-class fingerprint, radius 2, 2048 bits       |
+| `pubchem` | `binary(111)` | PubChem substructure fingerprint, 881 bits              |
 
-The `-3d` configs carry one row per conformer, three per molecule, lowest energy first:
+The `-3d` configs carry one row per molecule, in the same order as its fingerprint shard, with up to three conformers, lowest energy first:
 
-| Column                                | Type             | Description                                                 |
-| :------------------------------------ | :--------------- | :---------------------------------------------------------- |
-| `input_shard`, `input_row`            | `utf8`, `uint64` | Join keys back to the fingerprint row                       |
-| `smiles`                              | `utf8`           | Carried for convenience                                     |
-| `conformer_index`                     | `uint8`          | Energy rank, 0 is lowest                                    |
-| `status`                              | `uint8`          | 0 is success; other codes mark why geometry is absent       |
-| `n_heavy_atoms`, `n_atoms`, `n_bonds` | `uint16`         | Counts, with and without hydrogens                          |
-| `molecular_weight`                    | `float32`        | Exact mass in Daltons                                       |
-| `conformer_coords`                    | `list<float16>`  | `3 * n_atoms`, row-major, centroid-centered                 |
-| `conformer_energy`                    | `float32`        | MMFF94 energy in kcal/mol                                   |
-| `usrcat`                              | `list<float16>`  | 60-dimensional shape descriptor; USR is its first 12 values |
+| Column                                | Type                                 | Description                                    |
+| :------------------------------------ | :----------------------------------- | :--------------------------------------------- |
+| `key`                                 | `binary(16)`                         | The fingerprint row's key                      |
+| `n_atoms`, `n_heavy_atoms`, `n_bonds` | `uint16`                             | Counts, with and without hydrogens             |
+| `molecular_weight`                    | `float32`                            | Exact mass in Daltons                          |
+| `energies`                            | `list<float32>`                      | MMFF94 energy per conformer in kcal/mol        |
+| `points`                              | `list<fixed_size_list<float16, 3>>`  | All conformers end to end, centroid-centered   |
+| `usrcat`                              | `list<fixed_size_list<float16, 60>>` | Shape vector per conformer; USR is first 12    |
 
-Geometry columns are null wherever `status` is non-zero. Conformers come from ETKDG embedding over RDKit's experimental torsion preferences, followed by MMFF94 relaxation.
+Conformer `c` is `points[c * n_atoms : (c + 1) * n_atoms]`, and only embedded conformers are stored.
+Conformers come from ETKDG embedding over RDKit's experimental torsion preferences, followed by MMFF94 relaxation.
+The key packs the standard InChIKey and the CXSMILES enhanced-stereo groups, and decodes back to the InChIKey that PubChem or ChEMBL holds; the [GitHub repository](https://github.com/unum-science/USearchMolecules) documents the bit layout.
 
 ## Caveats
 
-Conformer yield is not complete: PubChem reaches three conformers for 97.9 % of molecules, and the shortfall is concentrated above 100 atoms. A `success` status bounds the energy's finiteness rather than its magnitude, so filter on the gap to a molecule's own lowest conformer rather than on absolute energy.
+Conformer yield is not complete: PubChem reaches three conformers for 97.9 % of molecules, and the shortfall is concentrated above 100 atoms.
+An embedded conformer's energy is finite rather than necessarily low, so filter on the gap to a molecule's own lowest conformer rather than on absolute energy.
 
-Where a SMILES names more than one fragment, the geometry covers only the largest, while the `smiles` column keeps the whole string. Reproduce the choice with RDKit's `LargestFragmentChooser` under `preferOrganic`.
+Where a SMILES names more than one fragment, the geometry covers only the largest, while the `smiles` column keeps the whole string.
+Reproduce the choice with RDKit's `LargestFragmentChooser` under `preferOrganic`.
+
+A key names a compound, not a row: tautomers, salts and repeated structures share one, so several rows can carry the same key.
+Eleven PubChem rows that standard InChI cannot name, `*` dummy atoms and one polymer, are not part of the dataset.
 
 ## More
 

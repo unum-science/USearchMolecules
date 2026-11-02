@@ -14,9 +14,9 @@ USearchMolecules is a public, open-source search index over every published drug
 - _"Cluster my 50K screening hits by their 3D shape similarity."_
 - _"Find all molecules with the same Bemis-Murcko scaffold as paclitaxel that aren't PAINS-flagged."_
 
-More specifically, it covers __7'132'507'184 molecules__ – sourced from:
+More specifically, it covers __7'132'507'173 molecules__ – sourced from:
 
-- 115'627'267 molecules from the __PubChem__ dataset.
+- 115'627'256 molecules from the __PubChem__ dataset.
 - 977'468'267 molecules from the __GDB13__ dataset.
 - 6'039'411'650 molecules from the __Enamine REAL__ dataset.
 
@@ -88,42 +88,39 @@ To view the dataset structure, one can use Python:
 >>> pq.read_table('data/real/parquet/0000000000-0001000000.parquet')  # 2D fingerprints
 
 pyarrow.Table
+key: fixed_size_binary[16] not null
 smiles: string not null
 maccs: fixed_size_binary[21] not null
-pubchem: fixed_size_binary[111] not null
 ecfp4: fixed_size_binary[256] not null
 fcfp4: fixed_size_binary[256] not null
+pubchem: fixed_size_binary[111] not null
 ```
 
-The `*.3D.parquet` shards carry one row per conformer — three per molecule, lowest energy first — with the geometry and shape descriptors:
+The `*.3D.parquet` shards carry one row per molecule, aligned with the 2D shard of the same stem, with every embedded conformer of that molecule, lowest energy first:
 
 ```sh
 >>> pq.read_table('data/pubchem/parquet/0000000000-0001000000.3D.parquet')  # 3D conformers
 
 pyarrow.Table
-input_shard: string          # source 2D shard stem
-input_row: uint64            # row within the source shard
-smiles: string
-conformer_index: uint8       # energy rank, 0 = lowest
-status: uint8
+key: fixed_size_binary[16] not null                   # same key as the 2D row
+n_atoms: uint16                                       # with hydrogens, of the largest fragment
 n_heavy_atoms: uint16
-n_atoms: uint16
 n_bonds: uint16
 molecular_weight: float
-n_conformers: uint8
-conformer_coords: list<halffloat>   # tightly packed (n_atoms, 3), centered frame
-conformer_energy: float             # MMFF94 kcal/mol
-usrcat: list<halffloat>             # 60-dim shape vector; USR is the first 12
+energies: list<float> not null                        # MMFF94 kcal/mol, one per conformer, lowest first
+points: list<fixed_size_list<halffloat, 3>> not null  # conformers end to end, n_atoms points each, centered frame
+usrcat: list<fixed_size_list<halffloat, 60>> not null # one 60-dim shape vector per conformer; USR is the first 12
 ```
 
-Join a conformer back to its 2D fingerprints on `(input_shard, input_row)`.
-Schema-level metadata records provenance: `producer_git_sha`, `num_conformers=3`, `max_atoms=192`, `dataset`, `coordinate_frame=centered`, `schema_version`, `dedup=none`.
+Row `i` of a `.3D.parquet` shard describes the molecule in row `i` of the `.parquet` shard of the same stem, so the two need no join; across shards and subsets, rows meet on `key`.
+Schema-level metadata records provenance: `producer_git_sha`, `num_conformers=3`, `max_atoms=192`, `dataset`, `coordinate_frame=centered`, `schema_version=3`, `dedup=none`, the key layout `key=inchikey-uuidv8`, and `conformer_layout`.
 `max_atoms` counts hydrogens, so it is the ceiling on `n_atoms` rather than on `n_heavy_atoms`.
 
 In a tabular form that will look like:
 
 | Column    | Value                                                      |
 | :-------- | :--------------------------------------------------------- |
+| `key`     | `0484b0ae-0a7a-8c49-bdc8-c6f845ff9034`                     |
 | `smiles`  | `CNCC(C)NC(=O)C1(C(C)(C)OC)CC1`                            |
 | `maccs`   | `0x00000200000002002021227C488B9C02100615FFCC`             |
 | `pubchem` | `0x00733000000000000000000000001800…` truncated, 111 bytes |
@@ -313,6 +310,13 @@ The data processing pipeline consists of 5 steps, each implemented as a standalo
 4. `prep_conformers.py`: Generate 3D conformers using ETKDG and optionally optimize with MMFF94.
 5. `prep_smiles.py`: Export SMILES strings to newline-delimited `.smi` files for [StringZilla][stringzilla].
 
+Multiple passes over the finished shards then key every row and regroup the conformers:
+
+- Each 2D row is keyed by RDKit's standard InChI of its `smiles`, parsed with sanitization and, when RDKit refuses that, without it.
+  The InChIKey and the row's CXSMILES enhanced-stereo groups are packed into the UUIDv8 described under [What's Persisted](#whats-persisted).
+  Rows that InChI cannot name are dropped rather than given a substitute key.
+- Each 3D shard is regrouped from one row per conformer into one row per molecule, in the row order of its 2D shard, keeping only embedded conformers.
+
 Every script is designed to work with bigger-than-memory data.
 In other words, processing 1 TB of molecules doesn't require 1 TB of RAM.
 Everything happens in a "gliding-window" fashion, with computationally intensive parts split between processes and threads.
@@ -368,64 +372,65 @@ Conformer generation with ETKDG + MMFF costs 60-600 ms per molecule depending on
 By contrast, parsing a SMILES string back into a full molecular graph with atom types, bond topology, formal charges, and stereochemistry takes under 0.2 ms.
 That 300-3000x cost gap is why we persist 3D coordinates but not the molecular graph.
 
-The 2D fingerprints and the 3D conformers live in __two separate Parquet files per shard__, sharing a stem: `parquet/<range>.parquet` for fingerprints with one row per molecule and `parquet/<range>.3D.parquet` for conformers with __one row per conformer__.
-A 3D row is joined back to its fingerprints by the `input_shard` and `input_row` keys.
+The 2D fingerprints and the 3D conformers live in __two separate Parquet files per shard__, sharing a stem: `parquet/<range>.parquet` for fingerprints and `parquet/<range>.3D.parquet` for conformers, both with __one row per molecule__ in the same order.
 
-__Fingerprint shard__ `parquet/<range>.parquet` — one row per molecule:
+__Fingerprint shard__ `parquet/<range>.parquet`:
 
 | Column    | Type          | Typical Size | Description                                              |
-| --------- | ------------- | ------------ | -------------------------------------------------------- |
-| `smiles`  | `utf8`        | ~50 B        | Canonical graph: atoms, bonds, charges, stereochemistry. |
-| `maccs`   | `binary(21)`  | 21 B         | MACCS structural keys, 166 bits.                         |
-| `pubchem` | `binary(111)` | 111 B        | PubChem substructure fingerprint, 881 bits. Needs CDK.   |
-| `ecfp4`   | `binary(256)` | 256 B        | Extended-connectivity fingerprint, radius 2, 2048 bits.  |
-| `fcfp4`   | `binary(256)` | 256 B        | Functional-class fingerprint, radius 2, 2048 bits.       |
+| :-------- | :------------ | -----------: | :------------------------------------------------------- |
+| `key`     | `binary(16)`  |         16 B | Compound identity, see below.                            |
+| `smiles`  | `utf8`        |        ~50 B | Canonical graph: atoms, bonds, charges, stereochemistry. |
+| `maccs`   | `binary(21)`  |         21 B | MACCS structural keys, 166 bits.                         |
+| `ecfp4`   | `binary(256)` |        256 B | Extended-connectivity fingerprint, radius 2, 2048 bits.  |
+| `fcfp4`   | `binary(256)` |        256 B | Functional-class fingerprint, radius 2, 2048 bits.       |
+| `pubchem` | `binary(111)` |        111 B | PubChem substructure fingerprint, 881 bits. Needs CDK.   |
 
-__Conformer shard__ `parquet/<range>.3D.parquet` — one row per conformer, with `K = 3` rows per molecule and a molecule that failed all conformers keeping a single null row:
+__The `key` column__ holds an RFC 9562 UUIDv8 as 16 big-endian bytes, and the same bytes identify the molecule in its 3D row and in every index.
+Its 122 custom bits hold a 117-bit payload, `P << 2 | flag`, zero-extended and placed big-endian around the fixed version and variant fields, so sorting the bytes sorts by InChIKey and then by flag:
 
-| Column             | Type            | Description                                                                |
-| ------------------ | --------------- | -------------------------------------------------------------------------- |
-| `input_shard`      | `utf8`          | Stem of the source fingerprint shard (join key).                           |
-| `input_row`        | `uint64`        | 0-based row within that shard (join key). Shard-local, not a global id.    |
-| `smiles`           | `utf8`          | Carried for convenience.                                                   |
-| `conformer_index`  | `uint8`         | 0..K-1, the __energy rank__ where 0 is the lowest-energy conformer.        |
-| `status`           | `uint8`         | Per-conformer verdict; see the status-code table below.                    |
-| `n_heavy_atoms`    | `uint16`        | Heavy-atom count (null if the molecule failed preprocess).                 |
-| `n_atoms`          | `uint16`        | Total atoms incl. H, to reshape coordinates.                               |
-| `n_bonds`          | `uint16`        | Bond count.                                                                |
-| `molecular_weight` | `float32`       | Exact mass in Daltons.                                                     |
-| `n_conformers`     | `uint8`         | K, fixed at 3, no deduplication.                                           |
-| `conformer_coords` | `list<float16>` | `3 * n_atoms` values, row-major `(n_atoms, 3)`; null unless `status == 0`. |
-| `conformer_energy` | `float32`       | This conformer's MMFF94 energy in kcal/mol; null unless `status == 0`.     |
-| `usrcat`           | `list<float16>` | 60-dim USRCAT shape vector; null unless `status == 0`. USR = its first 12. |
+- `P` is the standard InChIKey `XXXXXXXXXXXXXX-YYYYYYYYFV-P`: its 22 block letters as one base-26 number, most significant first, then one bit for `F`, five for `V` and five for the protonation letter `P`.
+- `flag` records the CXSMILES enhanced-stereo groups that standard InChI ignores: `0` for none or only `a:` absolute groups, `1` for `&` AND groups, meaning racemic or relative, `2` for `o` OR groups, and `3` for both.
 
-__The `status` column__ is the per-conformer verdict, and only `success` carries geometry — `conformer_coords`, `conformer_energy` and `usrcat` are null under every other code.
-Codes are append-only, and shipped shards carry only 0, 1, 4, 6, 8, 9 and 14.
+Decoding returns the InChIKey that PubChem, ChEMBL or any other InChIKey source holds for the same compound:
 
-| Code | Name                     | Meaning                                         |
-| ---: | :----------------------- | :---------------------------------------------- |
-|    0 | `success`                | Embedded, polished, finite energy.              |
-|    1 | `stereo_failure`         | A declared centre or E/Z bond went unsatisfied. |
-|    2 | `mmff_unconverged`       | The minimiser reached no stationary point.      |
-|    3 | `invalid_smiles`         | RDKit refused the SMILES.                       |
-|    4 | `too_many_atoms`         | Above the 192-atom pipeline ceiling.            |
-|    5 | `preprocess_timeout`     | Reserved; nothing emits it.                     |
-|    6 | `unsupported_element`    | No MMFF94 atom type — metals, boron, `SF5`.     |
-|    7 | `too_many_bonds`         | Wider than the descriptor's bond arrays.        |
-|    8 | `too_many_rings`         | More SSSR rings than the ring bitmap holds.     |
-|    9 | `bounds_infeasible`      | Smoothing left a lower bound above its upper.   |
-|   10 | `nonphysical_energy`     | The energy is not finite.                       |
-|   11 | `batch_overflow`         | The batch, not the molecule, failed to fit.     |
-|   12 | `slot_unwritten`         | No kernel reached the slot.                     |
-|   13 | `polish_inverted_center` | The polish inverted a tetrahedral centre.       |
-|   14 | `polish_inverted_bond`   | The polish inverted an E/Z bond.                |
+```python
+def inchikey_of(key: bytes) -> tuple[str, int]:
+    value = int.from_bytes(key, "big")
+    payload = (value >> 80) << 74 | ((value >> 64) & 0xFFF) << 62 | value & ((1 << 62) - 1)
+    flag, packed = payload & 3, payload >> 2
+    protonation, packed = packed & 31, packed >> 5
+    version, packed = packed & 31, packed >> 5
+    standard, packed = packed & 1, packed >> 1
+    letters = ""
+    for _ in range(22):
+        packed, letter = divmod(packed, 26)
+        letters = chr(65 + letter) + letters
+    return f"{letters[:14]}-{letters[14:]}{'S' if standard else 'N'}{chr(65 + version)}-{chr(65 + protonation)}", flag
+```
 
-Codes 4, 6 and 8 refuse the molecule before embedding, so it keeps a single row with null sizes; codes 1, 9 and 14 keep the full row block with only the geometry columns null.
+__Conformer shard__ `parquet/<range>.3D.parquet`, with up to `K = 3` conformers per row, lowest energy first:
+
+| Column             | Type                                 | Description                                         |
+| :----------------- | :----------------------------------- | :-------------------------------------------------- |
+| `key`              | `binary(16)`                         | The 2D row's key.                                   |
+| `n_atoms`          | `uint16`                             | Total atoms incl. H.                                |
+| `n_heavy_atoms`    | `uint16`                             | Heavy-atom count.                                   |
+| `n_bonds`          | `uint16`                             | Bond count.                                         |
+| `molecular_weight` | `float32`                            | Exact mass in Daltons.                              |
+| `energies`         | `list<float32>`                      | MMFF94 energy per conformer in kcal/mol, ascending. |
+| `points`           | `list<fixed_size_list<float16, 3>>`  | Every conformer's atoms, end to end.                |
+| `usrcat`           | `list<fixed_size_list<float16, 60>>` | One USRCAT shape vector per conformer.              |
+
+Conformer `c` of a row is `points[c * n_atoms : (c + 1) * n_atoms]`, and `len(energies)` counts the row's conformers.
+The 12-dimensional USR descriptor is the first 12 values of each `usrcat` vector.
+
+__Only embedded conformers are stored.__
+A conformer that fails to embed or polish is left out, so a row can hold fewer than three, and the pipeline's per-conformer failure codes are not persisted.
+A molecule refused before embedding, above the atom ceiling, with an element MMFF94 cannot type, or with more rings than the pipeline handles, has empty lists and null counts.
 
 Coordinates are centroid-centered — orientation is not canonicalized.
-Conformer rows within a molecule are emitted energy-sorted, lowest first.
-Each shard also carries schema-level key-value metadata recording provenance: producer git SHA, `num_conformers`, `max_atoms`, dataset, coordinate frame, and schema version.
-`max_atoms` is 192 and counts hydrogens; a molecule above it is refused whole and keeps a single row with `status = 4`.
+Each shard also carries schema-level key-value metadata recording provenance: producer git SHA, `num_conformers`, `max_atoms`, dataset, coordinate frame, schema version, key layout and conformer layout.
+`max_atoms` is 192 and counts hydrogens; a molecule above it is refused whole and has no conformers.
 
 Coordinates are stored as IEEE 754 `float16` and not `bfloat16`, because PyArrow and the Parquet specification natively support `float16`, while `bfloat16` has no Parquet encoding.
 The quantization error from `float64` to `float16` is under 0.002 Angstroms for any coordinate within 8 Angstroms of the centroid, and under 0.008 Angstroms beyond it, where the `float16` grid spacing doubles.
@@ -464,10 +469,10 @@ To read conformers back into NumPy arrays:
 ```python
 import numpy as np
 
-# One row is one conformer; conformer_coords is a flat list of 3 * n_atoms float16 values.
-xyz = np.asarray(row["conformer_coords"], dtype=np.float16).reshape(row["n_atoms"], 3)
-usrcat = np.asarray(row["usrcat"], dtype=np.float16)   # 60-dim shape descriptor; USR is usrcat[:12]
-energy = row["conformer_energy"]                       # MMFF94 energy, kcal/mol
+# One row is one molecule; its conformers sit end to end in `points`, lowest energy first.
+energies = row["energies"]                                                   # MMFF94 energies, kcal/mol
+xyz = np.asarray(row["points"], dtype=np.float16).reshape(len(energies), row["n_atoms"], 3)
+usrcat = np.asarray(row["usrcat"], dtype=np.float16)                        # (len(energies), 60); USR is usrcat[:, :12]
 ```
 
 For a typical drug-like molecule of ~40 atoms including hydrogens with 3 conformers, the coordinates take ~1.4 KB in `float16` versus ~15 KB for the previous SDF text format - a ~10x reduction; the 60-dim `usrcat` adds ~360 B per conformer.
@@ -489,17 +494,38 @@ PubChem holds the only meaningful shortfall, and it is concentrated in the tail.
 Yield stays near 99.95 % below 75 atoms and falls to 77.6 % in the 175-to-192-atom band.
 GDB13 and Enamine REAL are narrow enough that they never approach the ceiling.
 
-__A `success` status bounds the energy's finiteness, not its magnitude.__
-Conformers far above their own molecule's minimum are structures the minimiser never relaxed, and they are marked successful.
+__An embedded conformer's energy is finite, not necessarily low.__
+Conformers far above their own molecule's minimum are structures the minimiser never relaxed, and they are still stored.
 Filter on the gap to the molecule's lowest conformer rather than on absolute energy, which has no absolute zero in MMFF94:
 
 ```python
-# conformer_index is the energy rank, so index 0 is the molecule's minimum
-usable = [c for c in conformers if c["conformer_energy"] - conformers[0]["conformer_energy"] < 50.0]
+# energies are ascending, so energies[0] is the molecule's minimum
+usable = [c for c, energy in enumerate(row["energies"]) if energy - row["energies"][0] < 50.0]
 ```
 
 At a 100 kcal/mol gap this affects roughly 7 % of GDB13 molecules, whose small bridged cages ETKDG struggles to embed, against about 1 % of PubChem and Enamine REAL.
-Because the rows are energy-sorted, the affected conformer is almost always the last of the three, and `conformer_index = 0` is the safest single geometry to consume.
+Because conformers are stored energy-sorted, the affected conformer is almost always the last of the three, and the first is the safest single geometry to consume.
+
+__A key names a compound, not a row, so several rows can share one.__
+Standard InChI merges different spellings of one structure, mobile-hydrogen tautomers and some charge and protonation forms, and every such row stays in the dataset:
+
+| Subset    |          Rows | Shared-key groups | Rows in those groups | Largest group |
+| :-------- | ------------: | ----------------: | -------------------: | ------------: |
+| `pubchem` |   115'627'256 |           297'068 |              636'297 |            27 |
+| `example` |     2'000'000 |                53 |                  106 |             2 |
+| `gdb13`   |   977'468'267 |        10'190'883 |           21'636'255 |            10 |
+| `real`    | 6'039'411'650 |         9'553'952 |           19'470'151 |             … |
+
+Most GDB13 groups are tautomers, which GDB13 enumerates as separate molecules.
+PubChem groups mix salts beside their free bases, tautomers, and identical structures registered under several CIDs.
+Enamine REAL lists about 93 million structures twice, once with an `&` stereo group and once without, and the enhanced-stereo flag in the key keeps those pairs apart.
+Recomputing the full InChI of all 265 million grouped rows found no InChIKey hash collisions.
+Nineteen PubChem groups share a key only because the protonation letter saturates at `A` from 13 protons on, so `/p-13` and `/p-15` read alike.
+The same key also links subsets, so about 14.6 million PubChem compounds can be found in Enamine REAL by key alone.
+
+__Eleven PubChem rows are not in the dataset.__
+Seven are a bare `*` dummy atom, three are mixtures with a `*` fragment, and one is a polymer, and standard InChI cannot name any of them, so they have no key.
+Each of the eleven shards that held them lost that one row.
 
 ## Related Work
 
