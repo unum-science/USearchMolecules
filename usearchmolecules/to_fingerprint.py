@@ -6,6 +6,14 @@ Converts SMILES strings into binary fingerprint representations for similarity s
 - FCFP4: Functional-Class Fingerprints (radius 2, 2048 bits)
 - PubChem: 881-bit fingerprints via CDK
 
+These vectors fall into three families that answer different queries and are not interchangeable:
+- Similarity vectors, ECFP4 and FCFP4, hash local atomic environments into bits with no chemical meaning.
+  Tanimoto or Hamming distance compares whole molecules, but a bit subset does not imply a substructure.
+- Substructure flags, MACCS and PubChem, set one bit per named pattern, so they are sound for screening:
+  a candidate holding every query bit contains every query pattern. Sparse bits make them poor similarity vectors.
+- Shape descriptors, USR and USRCAT, are rotation-invariant floats per conformer, and cosine compares 3D shape.
+A search pipeline chains them: a similarity prefilter, then a substructure gate, then a shape ranking.
+
 Learn more:
 - SMILES notation: https://en.wikipedia.org/wiki/Simplified_molecular-input_line-entry_system
 - RDKit fingerprints: https://www.rdkit.org/docs/GettingStartedInPython.html#fingerprinting-and-molecular-similarity

@@ -19,12 +19,16 @@ The -s flag shows print statements, making it clear:
 - Fallback behavior for problematic molecules
 """
 
+import hashlib
 from typing import Any
 
 import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from rdkit import Chem
 
+from usearchmolecules.dataset import SequenceDataset, inchikey_of, pair_key, sequence_key
 from usearchmolecules.prep_conformers import (
     generate_conformer_etkdg,
     optimize_all_conformers_mmff,
@@ -589,6 +593,77 @@ class TestEndToEnd:
         print_summary(1, 1, ["ethanol"], "complete pipeline")
         test_results["total_tests"] += 1
         test_results["passed_tests"] += 1
+
+
+class TestInchiKey:
+    """Small-molecule keys decode to the InChIKey that RDKit derives from the stored SMILES."""
+
+    rows = (
+        (
+            "0303830d86d88c2c9c4d759a589f9034",
+            "OTKSGUKNAMJUHR-UHFFFAOYSA-N",
+            0,
+            "CCS(=O)(=O)NC1=CC=CC=C1C(=O)NC1CCN(C(=O)CC#N)CC1",
+        ),
+        (
+            "03b0fbc7724e8dbf9046ce923f1ad035",
+            "SBQDINOLIOJDJZ-MQZZGFOWSA-N",
+            1,
+            r"NC1=CC=C(C(=O)N[C@]23C[C@H]2CN(C(=O)/C=C(\F)C2=CC=CN=C2)C3)C=C1F |&1:8,10|",
+        ),
+    )
+
+    def test_round_trip(self):
+        for key, inchikey, flag, smiles in self.rows:
+            assert inchikey_of(bytes.fromhex(key)) == (inchikey, flag)
+            assert Chem.MolToInchiKey(Chem.MolFromSmiles(smiles)) == inchikey
+
+
+class TestSequenceDataset:
+    """Synthetic AlphaFold-shaped stems read back through `SequenceDataset`."""
+
+    sequences = ("MKV", "ACDE", "GG", "WY", "PPPPP")
+
+    def write_stems(self, directory) -> SequenceDataset:
+        """Two stems with 2-row groups, the second one's 3D table lacking pLDDT."""
+        (directory / "parquet").mkdir()
+        for first, end in [(0, 3), (3, 5)]:
+            stem = directory / "parquet" / f"{first:0>10}-{end:0>10}"
+            chunk = self.sequences[first:end]
+            keys = pa.array([sequence_key(sequence) for sequence in chunk], pa.binary(16))
+            table = pa.table({"key": keys, "sequence": chunk})
+            pq.write_table(table, f"{stem}.parquet", row_group_size=2)
+            points = [[[row, residue, -residue] for residue in range(len(chain))] for row, chain in enumerate(chunk)]
+            columns = {"key": keys, "points": pa.array(points, pa.list_(pa.list_(pa.float16(), 3)))}
+            if first == 0:
+                columns["plddt"] = pa.array([[90] * len(sequence) for sequence in chunk], pa.list_(pa.uint8()))
+            pq.write_table(pa.table(columns), f"{stem}.3D.parquet", row_group_size=2)
+        return SequenceDataset.open(directory)
+
+    def test_keys(self):
+        assert sequence_key("acd") == hashlib.md5(b"ACD").digest()
+        heavy, light = hashlib.md5(b"EVQ").digest(), hashlib.md5(b"DIQ").digest()
+        assert pair_key("evq", "DIQ") == hashlib.md5(heavy + light).digest()
+
+    def test_open_and_row(self, tmp_path):
+        dataset = self.write_stems(tmp_path)
+        assert dataset.stems == ["0000000000-0000000003", "0000000003-0000000005"]
+        assert len(dataset) == 5
+        for index, sequence in enumerate(self.sequences):
+            row = dataset.row(index)
+            assert row == {"key": sequence_key(sequence), "sequence": sequence}
+        with pytest.raises(IndexError):
+            dataset.row(5)
+        assert dataset.graph_path == str(tmp_path / "index-nw.safegraphs")
+
+    def test_structure(self, tmp_path):
+        dataset = self.write_stems(tmp_path)
+        points, plddt = dataset.structure(2)
+        assert points.dtype == np.float16 and points.shape == (2, 3)
+        assert points.tolist() == [[2, 0, 0], [2, 1, -1]]
+        assert plddt.dtype == np.uint8 and plddt.tolist() == [90, 90]
+        points, plddt = dataset.structure(4)
+        assert points.shape == (5, 3) and plddt is None
 
 
 if __name__ == "__main__":

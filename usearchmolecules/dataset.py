@@ -1,19 +1,20 @@
-"""Dataset management for molecular fingerprints stored in sharded Parquet files.
+"""Readers for the sharded Parquet collections and the USearch graphs published beside them.
 
-Provides efficient loading and searching of molecular datasets using USearch for
-similarity search. Datasets are organized into shards for scalable storage and
-memory-mapped access, supporting hybrid fingerprints (MACCS, ECFP4, FCFP4).
+Small molecules are keyed by an InChIKey UUIDv8 and searched through the ECFP4 and Chamfer graphs,
+proteins and antibodies by the MD5 of their sequence and searched through the Needleman-Wunsch graph.
 
 Example usage:
-    dataset = FingerprintedDataset.open("data/pubchem", shape=shape_maccs)
+    dataset = FingerprintedDataset.open("data/pubchem")
     results = dataset.search("CC(=O)OC1=CC=CC=C1C(=O)O", count=10)  # Aspirin
 """
 
 from __future__ import annotations
 
+import bisect
+import hashlib
 import os
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import islice
 
 import numpy as np
@@ -22,11 +23,9 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import stringzilla as sz
 from tqdm import tqdm
-from usearch.index import Index, Key, Matches
 
 from usearchmolecules.to_fingerprint import (
     FingerprintShape,
-    shape_maccs,
     shape_mixed,
     smiles_to_maccs_ecfp4_fcfp4,
 )
@@ -88,6 +87,39 @@ class FingerprintedEntry:
             fingerprint[progress : progress + 256] = fcfp4
             progress += 256
         return FingerprintedEntry(smiles=smiles, fingerprint=fingerprint)
+
+
+def inchikey_of(key: bytes) -> tuple[str, int]:
+    """InChIKey and enhanced-stereo flag packed into a small-molecule `key`.
+
+    The key is an RFC 9562 UUIDv8 as 16 big-endian bytes. Its 122 custom bits hold a 117-bit payload
+    `P << 2 | flag`, zero-extended and placed big-endian around the version and variant fields. `P` is the
+    22 InChIKey block letters as one base-26 number, then 1 bit for the standard flag, 5 for the version
+    letter and 5 for protonation. `flag` marks CXSMILES enhanced-stereo groups: 0 for none or only absolute,
+    1 for AND groups, 2 for OR groups, 3 for both.
+    """
+    value = int.from_bytes(key, "big")
+    payload = (value >> 80) << 74 | ((value >> 64) & 0xFFF) << 62 | value & ((1 << 62) - 1)
+    flag, packed = payload & 3, payload >> 2
+    protonation, packed = packed & 31, packed >> 5
+    version, packed = packed & 31, packed >> 5
+    standard, packed = packed & 1, packed >> 1
+    letters = ""
+    for _ in range(22):
+        packed, letter = divmod(packed, 26)
+        letters = chr(65 + letter) + letters
+    return f"{letters[:14]}-{letters[14:]}{'S' if standard else 'N'}{chr(65 + version)}-{chr(65 + protonation)}", flag
+
+
+def open_graph(kind, path: os.PathLike, residency: str) -> tuple:
+    """A `.safegraphs` graph of USearch class `kind` and its executor, loaded into RAM or served from NVMe in place."""
+    import usearch
+
+    if residency == "ram":
+        executor = usearch.Executor.for_ram()
+        return kind.load_ram(path, executor=executor), executor
+    executor = usearch.Executor.for_nvme()
+    return kind.view_nvme(path, executor=executor), executor
 
 
 def is_fingerprint_shard(filename: str) -> bool:
@@ -211,10 +243,12 @@ class FingerprintedShard:
 
 @dataclass
 class FingerprintedDataset:
+    """Sharded small-molecule collection with its fingerprints, conformers and graphs."""
+
     directory: os.PathLike
     shards: list[FingerprintedShard]
     shape: FingerprintShape | None = None
-    index: Index | None = None
+    graphs: dict[tuple[str, str], tuple] = field(default_factory=dict, repr=False)
 
     @staticmethod
     def open(
@@ -222,15 +256,12 @@ class FingerprintedDataset:
         shape: FingerprintShape | None = None,
         max_shards: int | None = None,
     ) -> FingerprintedDataset:
-        """Open a sharded molecular dataset and optionally load its USearch index.
+        """List the shards of a collection; graphs load on the first `graph` or `search` call.
 
         Args:
-            directory: Root directory containing parquet/ and smiles/ subdirectories
-            shape: Fingerprint configuration (determines which index file to load)
+            directory: Collection root holding the `parquet/` subdirectory and the graphs
+            shape: Default fingerprint layout for `head`
             max_shards: Optional limit on number of shards to load (useful for testing)
-
-        Returns:
-            FingerprintedDataset with loaded shards and index (if available)
         """
 
         if directory is None:
@@ -254,14 +285,7 @@ class FingerprintedDataset:
             )
 
         print(f"Fetched {len(shards)} shards")
-
-        index = None
-        if shape:
-            index_path = os.path.join(directory, shape.index_name)
-            if os.path.exists(index_path):
-                index = Index.restore(index_path, view=True)
-
-        return FingerprintedDataset(directory=directory, shards=shards, shape=shape, index=index)
+        return FingerprintedDataset(directory=directory, shards=shards, shape=shape)
 
     def shard_containing(self, key: int) -> FingerprintedShard:
         """Find the shard containing a given key/index, or raise if none does."""
@@ -294,7 +318,7 @@ class FingerprintedDataset:
         entries = list(islice(self._iter_entries(shape), max_rows))
 
         smiles = np.array([entry.smiles for entry in entries], dtype=object)
-        keys = np.arange(len(entries), dtype=Key)
+        keys = np.arange(len(entries), dtype=np.uint64)
         fingers = np.vstack([entry.fingerprint for entry in entries])
         if shuffle:
             permutation = np.random.default_rng(SEED).permutation(len(entries))
@@ -308,41 +332,47 @@ class FingerprintedDataset:
             for row in range(len(table)):
                 yield FingerprintedEntry.from_table_row(table, row, shape)
 
+    def graph(self, name: str = "ecfp4", residency: str = "ram") -> tuple:
+        """The `index-<name>.safegraphs` graph, `ecfp4` or `chamfer`, and its executor, cached per residency."""
+        import usearch
+
+        if (name, residency) not in self.graphs:
+            kind = {"ecfp4": usearch.DenseIndex, "chamfer": usearch.ShapesIndex}[name]
+            path = os.path.join(self.directory, f"index-{name}.safegraphs")
+            self.graphs[name, residency] = open_graph(kind, path, residency)
+        return self.graphs[name, residency]
+
     def search(
         self,
         smiles: str,
         count: int = 10,
-        log: bool = False,
-    ) -> list[tuple[int, str, float]]:
-        """Search for similar molecules using approximate nearest neighbor search.
+        expansion: int = 0,
+        residency: str = "ram",
+    ) -> list[tuple[bytes, float]]:
+        """Molecules nearest to `smiles` in the ECFP4 graph as `(key, Hamming distance)`."""
+        import usearch
 
-        Args:
-            smiles: Query molecule in SMILES notation
-            count: Number of similar molecules to return
-            log: Whether to log progress (can be a callback function)
+        index, executor = self.graph("ecfp4", residency)
+        _, ecfp4, _ = smiles_to_maccs_ecfp4_fcfp4(smiles)
+        arena = usearch.Arena(executor)
+        matches = index.on(executor).search(ecfp4[np.newaxis], count, arena, expansion_factor=expansion)
+        return [(match[0].bytes, float(match[1])) for match in matches[0]]
 
-        Returns:
-            List of tuples (key, smiles, distance) sorted by similarity
-        """
+    def search_shapes(
+        self,
+        points: np.ndarray,
+        count: int = 10,
+        expansion: int = 0,
+        residency: str = "ram",
+    ) -> list[tuple[bytes, float]]:
+        """Molecules whose lowest-energy conformer is nearest to one `(n, 3)` centered cloud, under Chamfer distance."""
+        import usearch
 
-        fingers: tuple = smiles_to_maccs_ecfp4_fcfp4(smiles)
-        entry = FingerprintedEntry.from_parts(
-            smiles,
-            fingers[0],
-            fingers[1],
-            fingers[2],
-            self.shape,
-        )
-        results: Matches = self.index.search(entry.fingerprint, count, log=log)
-
-        filtered_results = []
-        for match in results:
-            shard = self.shard_containing(match.key)
-            row = int(match.key - shard.first_key)
-            result = str(shard.smiles[row])
-            filtered_results.append((match.key, result, match.distance))
-
-        return filtered_results
+        index, executor = self.graph("chamfer", residency)
+        cloud = np.ascontiguousarray(points, dtype=np.float16)
+        arena = usearch.Arena(executor)
+        matches = index.on(executor).search([cloud], count, arena, expansion_factor=expansion)
+        return [(match[0].bytes, float(match[1])) for match in matches[0]]
 
     def conformer(self, key: int) -> tuple[np.ndarray, float] | None:
         """Lowest-energy stored conformer for `key` as `(xyz, energy)`, or None when none was produced.
@@ -354,16 +384,111 @@ class FingerprintedDataset:
         return shard.load_conformers()[int(key - shard.first_key)]
 
     def __len__(self) -> int:
-        return len(self.index)
+        return sum(pq.read_metadata(shard.table_path).num_rows for shard in self.shards)
 
     def random_smiles(self) -> str:
         """Get a random SMILES string from the dataset."""
-        shard_idx = random.randint(0, len(self.shards) - 1)
-        shard = self.shards[shard_idx]
-        row = random.randint(0, len(shard.smiles) - 1)
-        return str(shard.smiles[row])
+        shard = random.choice(self.shards)
+        row = random.randrange(pq.read_metadata(shard.table_path).num_rows)
+        return read_row(shard.table_path, row)["smiles"][0].as_py()
+
+
+def sequence_key(sequence: str) -> bytes:
+    """MD5 of the uppercase ASCII sequence, the `key` column of the protein and antibody subsets."""
+    return hashlib.md5(sequence.upper().encode("ascii")).digest()
+
+
+def pair_key(heavy: str, light: str) -> bytes:
+    """Key of a paired antibody cell, the MD5 of the heavy chain key followed by the light chain key."""
+    return hashlib.md5(sequence_key(heavy) + sequence_key(light)).digest()
+
+
+def read_row(path: os.PathLike, row: int) -> pa.Table:
+    """Single-row table at `row` of a Parquet file, decoding only the row group that holds it."""
+    file = pq.ParquetFile(path)
+    for group in range(file.num_row_groups):
+        group_rows = file.metadata.row_group(group).num_rows
+        if row < group_rows:
+            return file.read_row_group(group).slice(row, 1)
+        row -= group_rows
+    raise IndexError(f"Row past the end of {path}")
+
+
+@dataclass
+class SequenceDataset:
+    """Row-addressed reader for the `alphafold`, `oas-unpaired` and `oas-paired` sequence subsets."""
+
+    directory: os.PathLike
+    stems: list[str]
+    starts: list[int]
+    graphs: dict[str, tuple] = field(default_factory=dict, repr=False)
+
+    @staticmethod
+    def open(directory: os.PathLike) -> SequenceDataset:
+        """List the 2D stems under `directory/parquet` and their row counts from the Parquet footers."""
+        filenames = sorted(f for f in os.listdir(os.path.join(directory, "parquet")) if is_fingerprint_shard(f))
+        stems = [filename.removesuffix(".parquet") for filename in filenames]
+        starts = [0]
+        for filename in filenames:
+            starts.append(starts[-1] + pq.read_metadata(os.path.join(directory, "parquet", filename)).num_rows)
+        return SequenceDataset(directory=directory, stems=stems, starts=starts)
+
+    def __len__(self) -> int:
+        return self.starts[-1]
+
+    def locate(self, index: int) -> tuple[str, int]:
+        """Stem holding the dataset-wide row `index` and the row's position inside it."""
+        if not 0 <= index < len(self):
+            raise IndexError(f"Row {index} outside {len(self)} rows")
+        position = bisect.bisect_right(self.starts, index) - 1
+        return self.stems[position], index - self.starts[position]
+
+    def row(self, index: int) -> dict:
+        """All 2D columns of one row, with dictionary columns decoded to strings."""
+        stem, row = self.locate(index)
+        return read_row(os.path.join(self.directory, "parquet", stem + ".parquet"), row).to_pylist()[0]
+
+    def structure(self, index: int) -> tuple[np.ndarray, np.ndarray | None]:
+        """Cα coordinates of an `alphafold` row as `(n, 3)` float16 and its per-residue pLDDT, None when absent."""
+        stem, row = self.locate(index)
+        table = read_row(os.path.join(self.directory, "parquet", stem + ".3D.parquet"), row)
+        points = np.asarray(pc.list_flatten(pc.list_flatten(table["points"])), dtype=np.float16).reshape(-1, 3)
+        if "plddt" not in table.column_names:
+            return points, None
+        return points, np.asarray(pc.list_flatten(table["plddt"]), dtype=np.uint8)
+
+    @property
+    def graph_path(self) -> str:
+        """Needleman-Wunsch graph under BLOSUM62 over the distinct keys, opened by `graph`.
+
+        Large subsets keep a JSON manifest at this path beside its `index-nw-0000k-of-0000n.safegraphs` parts.
+        """
+        return os.path.join(self.directory, "index-nw.safegraphs")
+
+    def graph(self, residency: str = "ram") -> tuple:
+        """The Needleman-Wunsch graph and its executor, cached per residency."""
+        import usearch
+
+        if residency not in self.graphs:
+            self.graphs[residency] = open_graph(usearch.SequenceIndex, self.graph_path, residency)
+        return self.graphs[residency]
+
+    def search(
+        self,
+        sequences: list[str],
+        count: int = 10,
+        expansion: int = 0,
+        residency: str = "ram",
+    ) -> list[list[tuple[bytes, float]]]:
+        """Nearest distinct sequences to each query as `(key, Needleman-Wunsch distance)`, one list per query."""
+        import usearch
+
+        index, executor = self.graph(residency)
+        arena = usearch.Arena(executor)
+        matches = index.on(executor).search(sequences, count, arena, expansion_factor=expansion)
+        return [[(match[0].bytes, float(match[1])) for match in matches[query]] for query in range(len(sequences))]
 
 
 if __name__ == "__main__":
-    dataset = FingerprintedDataset.open("data/pubchem", shape=shape_maccs)
-    dataset.search("C")
+    dataset = FingerprintedDataset.open("data/example")
+    print(dataset.search("C"))

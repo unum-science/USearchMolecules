@@ -1,8 +1,8 @@
-"""USearchMolecules - Large Multi-Modal Chem-Informatics dataset for drug discovery.
+"""USearchMolecules - an open, searchable atlas of chemical and biological entities.
 
-This package builds and queries multi-modal representations of 7B+ small
-molecules: binary fingerprints (MACCS, PubChem, ECFP4, FCFP4) and 3D conformer
-geometries, indexed with USearch for real-time retrieval at billion scale.
+This package reads and builds the atlas: small molecules with their fingerprints and
+3D conformers, AlphaFold proteins with their Cα traces, and OAS antibodies with their
+germline calls, each keyed permanently and searched through USearch graphs.
 """
 
 from importlib.metadata import PackageNotFoundError, version
@@ -13,6 +13,10 @@ from usearchmolecules.dataset import (
     FingerprintedDataset,
     FingerprintedEntry,
     FingerprintedShard,
+    SequenceDataset,
+    inchikey_of,
+    pair_key,
+    sequence_key,
 )
 from usearchmolecules.to_fingerprint import (
     FingerprintShape,
@@ -33,6 +37,10 @@ __all__ = [
     "FingerprintedDataset",
     "FingerprintedEntry",
     "FingerprintedShard",
+    "SequenceDataset",
+    "inchikey_of",
+    "pair_key",
+    "sequence_key",
     "shape_maccs",
     "shape_mixed",
     "smiles_to_maccs_ecfp4_fcfp4",
