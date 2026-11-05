@@ -471,7 +471,7 @@ USearchMolecules keeps the corpus indexed across modalities, so a substructure s
 If USearchMolecules helps your research or product, please cite it:
 
 ```bibtex
-@software{Vardanian_USearchMolecules,
+@dataset{Vardanian_USearchMolecules,
   author = {Vardanian, Ash},
   title = {{USearchMolecules: An Open, Searchable Atlas of Chemical and Biological Entities}},
   doi = {10.5281/zenodo.21613663},

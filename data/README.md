@@ -127,7 +127,7 @@ Pre-built USearch indexes, mirror choices, the SMARTS catalogs and the full meth
 ## Citation
 
 ```bibtex
-@software{Vardanian_USearchMolecules,
+@dataset{Vardanian_USearchMolecules,
   author = {Vardanian, Ash},
   title = {{USearchMolecules: An Open, Searchable Atlas of Chemical and Biological Entities}},
   doi = {10.5281/zenodo.21613663},
