@@ -3,7 +3,7 @@ title: "USearchMolecules: An Open, Searchable Atlas of Chemical and Biological E
 message: "If you use this dataset, please cite it as below."
 type: software
 license: Apache-2.0
-version: 2.0.0
+version: 3.0.0
 date-released: "2026-07-31"
 repository-code: https://github.com/unum-science/USearchMolecules
 url: https://ashvardanian.com/posts/usearch-molecules/
