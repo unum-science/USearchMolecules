@@ -7,7 +7,10 @@ task_categories:
 - feature-extraction
 tags:
 - chemistry
+- biology
 - molecules
+- proteins
+- antibodies
 - drug-discovery
 - cheminformatics
 - smiles
@@ -41,7 +44,8 @@ configs:
 
 # USearch Molecules
 
-7'132'507'173 small molecules with 2D fingerprints, 3D conformers and shape descriptors, indexed for real-time similarity search.
+An open, searchable atlas of chemical and biological entities, from small molecules to the proteins and antibodies they are designed against.
+Every entity is one row under a permanent key derived from the entity itself, with its representations and search graphs added beside the same rows over time.
 
 Start with `example`: 2 million molecules drawn from all three sources, 4 GB, carrying everything the larger subsets do.
 
@@ -125,7 +129,7 @@ Pre-built USearch indexes, mirror choices, the SMARTS catalogs and the full meth
 ```bibtex
 @software{Vardanian_USearchMolecules,
   author = {Vardanian, Ash},
-  title = {{USearchMolecules: A Multi-Modal Atlas of 7 Billion Small Molecules}},
+  title = {{USearchMolecules: An Open, Searchable Atlas of Chemical and Biological Entities}},
   doi = {10.5281/zenodo.21613663},
   url = {https://github.com/unum-science/USearchMolecules},
   license = {Apache-2.0}

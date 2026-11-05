@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-title: "USearchMolecules: A Multi-Modal Atlas of 7 Billion Small Molecules"
+title: "USearchMolecules: An Open, Searchable Atlas of Chemical and Biological Entities"
 message: "If you use this dataset, please cite it as below."
 type: software
 license: Apache-2.0
@@ -8,24 +8,24 @@ date-released: "2026-07-31"
 repository-code: https://github.com/unum-science/USearchMolecules
 url: https://ashvardanian.com/posts/usearch-molecules/
 doi: 10.5281/zenodo.21613663
-identifiers:
-  - type: doi
-    value: 10.5281/zenodo.21719474
-    description: "v2.0 — fingerprints and 3D conformer geometries"
-  - type: doi
-    value: 10.5281/zenodo.21613664
-    description: "v0.1 — fingerprints only"
 abstract: >-
-  Large chem-informatics dataset of 7'131'914'291 small molecules with up to 50 heavy atoms,
-  aggregated from PubChem, GDB13, and Enamine REAL, and enriched with machine-searchable
-  representations of every molecule, growing over time.
-  Those currently span 28 billion binary structural fingerprints computed with RDKit and CDK -
-  MACCS with 166 dimensions, PubChem with 881, ECFP4 with 2048, and FCFP4 with 2048 -
-  as well as 3D conformer geometries generated with ETKDG and optimized with MMFF94.
-  Distributed as Parquet shards with pre-constructed USearch indexes for real-time
-  similarity search and clustering across billions of molecules, hosted anonymously on the
-  AWS Open Data platform, and accompanied by a bigger-than-memory Python pipeline
-  with optional GPU acceleration for reproducing every stage.
+  USearchMolecules is an open, searchable atlas of chemical and biological entities, from the
+  small molecules people make, screen and buy to the proteins and antibodies they are designed
+  against. Every entity is one Parquet row under a permanent key derived from the entity itself,
+  so a compound or a sequence keeps one key across collections and releases, while fingerprints,
+  conformers, predicted structures and germline calls are added beside the same rows together
+  with USearch graphs that link each entity to its nearest neighbors. It is distributed as
+  row-aligned Parquet shards and graph files in a public S3 bucket readable without an account,
+  for chemists, biologists, retrieval pipelines and agents that search across billions of entities.
+keywords:
+  - cheminformatics
+  - bioinformatics
+  - molecular similarity search
+  - molecular fingerprints
+  - protein structure
+  - antibody repertoires
+  - vector search
+  - open data
 
 authors:
   - family-names: Vardanian
@@ -41,23 +41,28 @@ references:
     authors:
       - family-names: Vardanian
         given-names: Ash
+        orcid: https://orcid.org/0000-0002-4882-1815
   - type: software
     title: "USearch: Smaller & Faster Similarity Search & Clustering Engine"
     url: https://github.com/unum-cloud/USearch
-    doi: 10.5281/zenodo.7949416
+    doi: 10.5281/zenodo.7949415
     authors:
       - family-names: Vardanian
         given-names: Ash
+        orcid: https://orcid.org/0000-0002-4882-1815
   - type: software
     title: "StringZilla: Fast SIMD, SWAR, and GPGPU String Processing"
     url: https://github.com/ashvardanian/StringZilla
-    doi: 10.5281/zenodo.21472333
+    doi: 10.5281/zenodo.21472332
     authors:
       - family-names: Vardanian
         given-names: Ash
+        orcid: https://orcid.org/0000-0002-4882-1815
   - type: software
     title: "NumKong: 2000 Mixed Precision Kernels For All"
     url: https://github.com/ashvardanian/NumKong
+    doi: 10.5281/zenodo.21480519
     authors:
       - family-names: Vardanian
         given-names: Ash
+        orcid: https://orcid.org/0000-0002-4882-1815

@@ -1,122 +1,93 @@
 # USearchMolecules
 
-Drug discovery is, mechanically, a search problem.
-A medicinal chemist starts with a molecule that almost works — too toxic, too unstable, too hard to make — and needs to find a molecule that's chemically similar but fixes the problem.
-Today this search runs through expensive in-house screening libraries of ~1M molecules, commercial catalogs like Enamine REAL with ~6B virtual compounds, and proprietary internal data.
-Each search takes hours-to-weeks because the underlying tools are slow and siloed.
+USearchMolecules is an open, searchable atlas of chemical and biological entities: the small molecules people make, screen and buy, and the proteins and antibodies those molecules are designed against.
+Every entity is one row under a permanent key derived from the entity itself, so a compound or a sequence lands on the same key in every collection that holds it.
+Everything computed about an entity, from fingerprints and conformers to predicted structures and germline calls, is added beside the same rows, together with the graphs that link each entity to its nearest neighbors.
+New collections, representations and annotations extend the atlas without renumbering what is already there.
 
-![USearchMolecules 7B dataset thumbnail](https://github.com/ashvardanian/ashvardanian/raw/master/repositories/USearchMolecules.jpg?raw=true)
+![USearchMolecules atlas thumbnail](https://github.com/ashvardanian/ashvardanian/raw/master/repositories/USearchMolecules.jpg?raw=true)
 
-USearchMolecules is a public, open-source search index over every published drug-like molecule that lets a chemist or an automated pipeline ask, in milliseconds:
+It lets a chemist, a biologist, an automated pipeline or an agent ask, in milliseconds:
 
 - _"Show me 100 molecules shaped like this one but without acrylates."_
 - _"Show me everything in Enamine that swaps a methyl-pyridine for an ethyl-imidazole on this scaffold."_
 - _"Cluster my 50K screening hits by their 3D shape similarity."_
 - _"Find all molecules with the same Bemis-Murcko scaffold as paclitaxel that aren't PAINS-flagged."_
+- _"Which human proteins align closest to this sequence, and which of them carry a kinase domain?"_
+- _"Which observed antibodies sit nearest to this candidate, and how far has each matured from its germline?"_
 
-More specifically, it covers __7'132'507'173 molecules__ – sourced from:
+The atlas includes three small-molecule collections, the predicted structures of UniProt, and the observed antibody repertoires:
 
-- 115'627'256 molecules from the __PubChem__ dataset.
-- 977'468'267 molecules from the __GDB13__ dataset.
-- 6'039'411'650 molecules from the __Enamine REAL__ dataset.
+- __Example__, `example`: 2'000'000 compounds drawn from the three below, the one to start with.
+- __PubChem__, `pubchem`: 115'627'256 compounds deposited in NCBI PubChem.
+- __GDB-13__, `gdb13`: 977'468'267 molecules enumerated by the University of Bern.
+- __Enamine REAL__, `real`: 6'039'411'650 make-on-demand compounds.
+- __AlphaFold DB__, `alphafold`: 241'070'489 predicted protein structures, synced to UniProt 2025_03.
+- __OAS Unpaired__, `oas-unpaired`: 2'427'646'880 antibody chains from the Observed Antibody Space.
+- __OAS Paired__, `oas-paired`: 3'087'576 antibody cells, one heavy and one light chain each.
 
-A fourth subset, __Example__, holds 2'000'000 molecules drawn from those three and is not added to the total.
-It is the one to start with: a single download that carries the whole collection's diversity rather than one corner of one subset.
+Every entity carries what its kind is searched and filtered by:
 
-All molecules come with several important categories of information:
+- __Small molecules__: the SMILES graph; MACCS and PubChem substructure keys; ECFP4 and FCFP4 circular fingerprints; up to three MMFF94-relaxed conformers with their energies and USRCAT shape vectors.
+- __Proteins__: the amino-acid sequence; the Cα trace with AlphaFold's per-residue confidence; organism and domain names; UniProt curation, gene names, enzyme classes, Gene Ontology terms and Pfam domains.
+- __Antibodies__: the variable-domain sequence and its CDR3; framework and CDR lengths; V, D and J germline calls with V and J identity; the study, donor and run each chain was observed in.
 
-- Traditional structural dictionary-based keys, commonly used for substructure search:
-  - __MACCS__: Molecular ACCess System keys with __166__ dimensions.
-  - __PubChem__: Structure Fingerprints with __881__ dimensions.
-- Hashed circular fingerprints often used for similarity search:
-  - __ECFP4__: Extended Connectivity Fingerprint of diameter 4 with __2048__ dimensions.
-  - __FCFP4__: Functional Class Fingerprint of diameter 4 with __2048__ dimensions.
-- Multiple 3D conformations produced computationally:
-  - __ETKDG__ initialization from RDKit's experimental torsion preferences.
-  - __MMFF94__ relaxation of each seed by the Merck Molecular Force Field.
-  - __Three+ conformers__ per molecule, kept without deduplication, because the seeds are already diverse.
-  - __Per-conformer energies__ in kcal/mol stored alongside coordinates, lowest first.
-  - __USRCAT__ shape vectors — __60__ dimensions per conformer, `float16` — for rotation-invariant 3D similarity search without alignment.
-    The 12-dimensional USR descriptor is exactly the first 12 values, so it is not stored separately.
-
-Those fingerprints were then indexed using [Unum's USearch](https://github.com/unum-cloud/USearch) to enable real-time search and clustering of molecular structures for drug discovery and broader chemistry.
+[Unum's USearch](https://github.com/unum-cloud/USearch) graphs link every entity to its nearest neighbors under the same keys as the rows: compounds by ECFP4 fingerprints, PubChem compounds also by the Chamfer distance between their conformers, and proteins and antibodies by Needleman-Wunsch alignment.
 USearch takes a user-defined metric, and [NumKong](https://github.com/ashvardanian/NumKong) supplies the geometric kernels one can call — Kabsch and Umeyama alignment over the conformer coordinates themselves.
 The conformers come from [SmallField](https://github.com/unum-science/SmallField), which runs ETKDG embedding and MMFF94 relaxation entirely on the GPU.
-It is published on three interchangeable mirrors — [AWS Open Data](https://registry.opendata.aws/usearch-molecules/), Nebius and Hugging Face — each anonymously accessible and byte-for-byte identical, covered under [Choosing a Mirror](#choosing-a-mirror).
+It is published on [AWS Open Data](https://registry.opendata.aws/usearch-molecules/), downloadable without an AWS account, as covered under [Usage](#usage).
 
 ## Dataset Structure
 
-Each subset's `parquet/` folder co-locates two shard families at the same input ranges: `*.parquet` with the 2D fingerprints and `*.3D.parquet` with the 3D conformers and shape descriptors.
-Every mirror verifies content on transfer, so a completed download needs no separate manifest.
+Each collection holds `parquet/` with one row per entity, cut into 1M-row stems named by their first and end rows, and its graphs beside it as `index-<column>.safegraphs`.
+A `<stem>.3D.parquet` file is row-aligned with the `<stem>.parquet` of the same stem, so row `i` of both describes one entity and the two need no join; across stems and collections, rows meet on `key`.
+A graph split into parts keeps a JSON manifest under the bare name, beside its `-0000k-of-0000n` parts.
+S3 verifies content on transfer, so a completed download needs no separate manifest.
 
 ```sh
 .
-├── data
-│   ├── pubchem
-│   │   ├── index-maccs.usearch # 18.6 GB
-│   │   ├── index-maccs-ecfp4.usearch # 46.1 GB
-│   │   └── parquet # 30 GB 2D + 117 GB 3D
-│   │       ├── 0000000000-0001000000.parquet # 265 MB, 2D fingerprints
-│   │       ├── 0000000000-0001000000.3D.parquet # ~1.0 GB, 3D conformers
-│   │       ├── ...
-│   │       └── 0115000000-0116000000.3D.parquet
-│   ├── gdb13
-│   │   ├── index-maccs.usearch # 157.0 GB
-│   │   ├── index-maccs-ecfp4.usearch # 390.1 GB
-│   │   └── parquet # 189 GB 2D + 674 GB 3D
-│   │       ├── 0000000000-0001000000.parquet # 198 MB, 2D fingerprints
-│   │       ├── 0000000000-0001000000.3D.parquet # ~690 MB, 3D conformers
-│   │       ├── ...
-│   │       └── 0977000000-0978000000.3D.parquet
-│   └── real
-│       └── parquet # 1.5 TB 2D + 6.6 TB 3D
-│           ├── 0000000000-0001000000.parquet # 262 MB, 2D fingerprints
-│           ├── 0000000000-0001000000.3D.parquet # ~1.2 GB, 3D conformers
-│           ├── ...
-│           └── 6039000000-6040000000.3D.parquet
-└── README.md
+└── data
+    ├── example                                  # 3.5 GB, the same shape as pubchem without the Chamfer graph
+    ├── pubchem
+    │   ├── index-ecfp4.safegraphs               # 62.0 GB
+    │   ├── index-chamfer.safegraphs             # ~52 GB, over the lowest-energy conformers
+    │   └── parquet                              # 22.5 GB 2D + 129.8 GB 3D
+    │       ├── 0000000000-0001000000.parquet    # 195 MB, SMILES and fingerprints
+    │       ├── 0000000000-0001000000.3D.parquet # ~1.1 GB, conformers and shape vectors
+    │       ├── ...
+    │       └── 0115000000-0116000000.3D.parquet
+    ├── gdb13                                    # 142.3 GB 2D + 681.1 GB 3D, the same shape as example
+    ├── real
+    │   ├── index-ecfp4.safegraphs               # manifest of the six parts below
+    │   ├── index-ecfp4-00001-of-00006.safegraphs # ~540 GB, over 1B compounds
+    │   ├── ...
+    │   └── parquet                              # 1.1 TB 2D + 7.1 TB 3D
+    ├── alphafold
+    │   ├── index-nw.safegraphs                  # manifest of its index-nw-0000k-of-0000n parts
+    │   └── parquet                              # 242 stems
+    │       ├── 0000000000-0001000000.parquet    # ~225 MB, sequences and annotations
+    │       ├── 0000000000-0001000000.3D.parquet # ~2.1 GB, Cα traces and pLDDT
+    │       ├── ...
+    │       └── 0241000000-0241070489.3D.parquet
+    ├── oas-unpaired                             # 163.2 GB in 2'428 stems, the same shape as oas-paired, graph in parts
+    └── oas-paired
+        ├── index-nw.safegraphs                  # over heavy and light chains
+        └── parquet                              # 374 MB, no 3D family
+            ├── 0000000000-0001000000.parquet    # 121 MB, cells with both chains
+            ├── ...
+            └── 0003000000-0003087576.parquet
 ```
 
-Pre-constructed search and clustering indexes for the Enamine REAL dataset are much harder to distribute and deploy.
-Those are not yet available in the bucket but are available per request.
-To view the dataset structure, one can use Python:
+Every shard documents its own schema and provenance in Parquet metadata, readable without downloading the rows:
 
-```sh
-  $ pip install pyarrow
-  $ python
->>> import pyarrow.parquet as pq
->>> pq.read_table('data/real/parquet/0000000000-0001000000.parquet')  # 2D fingerprints
+```py
+import pyarrow.parquet as pq
 
-pyarrow.Table
-key: fixed_size_binary[16] not null
-smiles: string not null
-maccs: fixed_size_binary[21] not null
-ecfp4: fixed_size_binary[256] not null
-fcfp4: fixed_size_binary[256] not null
-pubchem: fixed_size_binary[111] not null
+pq.read_schema("data/example/parquet/0000000000-0001000000.parquet")      # 2D columns, key layout, schema version
+pq.read_schema("data/example/parquet/0000000000-0001000000.3D.parquet")   # conformer columns, producer, max_atoms
 ```
 
-The `*.3D.parquet` shards carry one row per molecule, aligned with the 2D shard of the same stem, with every embedded conformer of that molecule, lowest energy first:
-
-```sh
->>> pq.read_table('data/pubchem/parquet/0000000000-0001000000.3D.parquet')  # 3D conformers
-
-pyarrow.Table
-key: fixed_size_binary[16] not null                   # same key as the 2D row
-n_atoms: uint16                                       # with hydrogens, of the largest fragment
-n_heavy_atoms: uint16
-n_bonds: uint16
-molecular_weight: float
-energies: list<float> not null                        # MMFF94 kcal/mol, one per conformer, lowest first
-points: list<fixed_size_list<halffloat, 3>> not null  # conformers end to end, n_atoms points each, centered frame
-usrcat: list<fixed_size_list<halffloat, 60>> not null # one 60-dim shape vector per conformer; USR is the first 12
-```
-
-Row `i` of a `.3D.parquet` shard describes the molecule in row `i` of the `.parquet` shard of the same stem, so the two need no join; across shards and subsets, rows meet on `key`.
-Schema-level metadata records provenance: `producer_git_sha`, `num_conformers=3`, `max_atoms=192`, `dataset`, `coordinate_frame=centered`, `schema_version=3`, `dedup=none`, the key layout `key=inchikey-uuidv8`, and `conformer_layout`.
-`max_atoms` counts hydrogens, so it is the ceiling on `n_atoms` rather than on `n_heavy_atoms`.
-
-In a tabular form that will look like:
+One small-molecule row looks like:
 
 | Column    | Value                                                      |
 | :-------- | :--------------------------------------------------------- |
@@ -126,50 +97,6 @@ In a tabular form that will look like:
 | `pubchem` | `0x00733000000000000000000000001800…` truncated, 111 bytes |
 | `ecfp4`   | `0x40000000000000000000800000002400…` truncated, 256 bytes |
 | `fcfp4`   | `0xE0001400000000000000000000000000…` truncated, 256 bytes |
-
-The `data/example` subset is the one to start with: 2 million molecules drawn from all three, small enough to download in one go and diverse enough to stand in for the whole collection.
-It carries everything the larger subsets do — fingerprints, conformers, SMILES and both indexes — so an application can be built against it and pointed at PubChem or REAL unchanged.
-
-```sh
-.
-└── data
-    └── example # 4.0 GB
-        ├── index-maccs.usearch # 329 MB
-        ├── index-maccs-ecfp4.usearch # 817 MB
-        ├── parquet # 498 MB 2D + 2.2 GB 3D
-        │   ├── 0000000000-0001000000.parquet # 249 MB, 2D fingerprints
-        │   ├── 0000000000-0001000000.3D.parquet # 1.1 GB, 3D conformers
-        │   ├── 0001000000-0002000000.parquet
-        │   └── 0001000000-0002000000.3D.parquet
-        └── smiles # 96 MB
-            ├── 0000000000-0001000000.smi
-            └── 0001000000-0002000000.smi
-```
-
-### Molecule Sizes
-
-Two counts matter and they are far apart.
-The `smiles` column implies a heavy-atom count, but any force field or 3D pipeline works on the molecule after explicit hydrogens are added, which is roughly twice as large.
-Measured on a stratified sample — shards spread across each subset's full index range, a random row group per shard, uniform rows within it, largest fragment only:
-
-| Subset    | Heavy p50 / p95 / p99 / max | With Hydrogens p50 / p95 / p99 / max | Over 192 Atoms |
-| :-------- | :-------------------------- | :----------------------------------- | -------------: |
-| `pubchem` | 24 / 49 / 79 / 202          | 46 / 90 / 168 / 412                  |         0.68 % |
-| `gdb13`   | 13 / 13 / 13 / 13           | 27 / 32 / 34 / 39                    |         0.00 % |
-| `real`    | 27 / 29 / 30 / 34           | 52 / 61 / 64 / 70                    |         0.00 % |
-
-PubChem is the only subset with a large-molecule tail, and its p99 is where the two counts diverge most — 79 heavy atoms become 168 with hydrogens.
-GDB-13 is a spike rather than a distribution, since every molecule is enumerated at exactly 13 heavy atoms.
-Enamine REAL is lead-like and narrow, which is why it never approaches a 192-atom ceiling.
-
-__Shards are not ordered by molecule size.__
-Across all 8 sampled REAL shards the mean with-hydrogen count spans 0.81 atoms on a mean of 51.1, non-monotone, with a least-squares slope of −0.04 atoms per shard.
-PubChem gives a Spearman correlation of −0.01 against shard index over 16 shards.
-So the first N shards of a subset are a fair sample of its size distribution, and a benchmark that consumes shards in filename order is not size-biased.
-
-__The conformers of one molecule are far apart enough that deduplication would discard little.__
-Median inter-conformer Kabsch RMSD is 1.45 Å for PubChem, 1.08 Å for GDB13 and 1.50 Å for Enamine REAL, over 36'000 pairs drawn the same way.
-Pairs falling within 0.5 Å are 4.5 %, 4.7 % and 1.0 % respectively — REAL is the most diverse of the three, and GDB13 the least, since its rigid caged systems have the fewest rotatable bonds to move.
 
 ## Installation
 
@@ -205,83 +132,82 @@ pixi run python -m usearchmolecules.prep_conformers --datasets example --use-gpu
 
 ## Usage
 
-### Exploring Dataset via Command Line Interface
+### Downloading
 
-Download the example dataset of 2M molecules:
-
-```sh
-mkdir -p data/example
-aws s3 sync --no-sign-request s3://usearch-molecules/data/example data/example/
-```
-
-If you need just one of the subsets:
+Every collection sits under `s3://usearch-molecules/data/` on AWS Open Data and downloads without an account.
+Start with `example`, then fetch whichever collections you need:
 
 ```sh
-aws s3 sync --no-sign-request s3://usearch-molecules/data/example/ data/example/
-aws s3 sync --no-sign-request s3://usearch-molecules/data/pubchem/ data/pubchem/
-aws s3 sync --no-sign-request s3://usearch-molecules/data/gdb13/ data/gdb13/
-aws s3 sync --no-sign-request s3://usearch-molecules/data/real/ data/real/
+for collection in example pubchem gdb13 real alphafold oas-unpaired oas-paired; do
+    aws s3 sync --no-sign-request s3://usearch-molecules/data/$collection/ data/$collection/
+done
 ```
 
-#### Choosing a Mirror
+Add `--exclude "index-*"` to fetch only the shards and leave the graphs behind, or drop the path to browse: `aws s3 ls --no-sign-request s3://usearch-molecules/data/`.
+The Nebius and Hugging Face copies still hold the previous schema until they are refreshed.
 
-The dataset lives on three mirrors at identical paths — Parquet shards, `.usearch` indexes, and `.smi` files — so pick whichever is closest or cheapest and fetch it with that backend's own client:
+### Searching from Python
 
-```sh
-# AWS Open Data, anonymous. Drop the path to browse: aws s3 ls --no-sign-request s3://usearch-molecules
-aws s3 sync --no-sign-request s3://usearch-molecules/data/pubchem/ data/pubchem/
-
-# Nebius, S3-compatible
-aws s3 sync --endpoint-url https://storage.us-central1.nebius.cloud \
-    s3://usearch-molecules/data/pubchem/ data/pubchem/
-
-# Hugging Face
-hf download unum-cloud/USearchMolecules --repo-type dataset --include "data/pubchem/*" --local-dir data
-```
-
-Every mirror holds byte-for-byte identical files, so the choice is purely about proximity and cost.
-
-You can immediately check if the indexes are readable:
-
-```sh
-  $ python
->>> from usearch.index import Index
->>> Index.metadata("data/pubchem/index-maccs.usearch")
-
-{'kind_metric': <MetricKind.Tanimoto: 116>,
- 'kind_scalar': <ScalarKind.B1: 1>,
- 'count_present': 115627267,
- 'count_deleted': 0,
- 'dimensions': 192}
-```
-
-With those out of the way, you can now query the downloaded files:
+Small molecules are searched by their ECFP4 fingerprint, and every hit comes back as a key with its Hamming distance:
 
 ```py
-from usearchmolecules.dataset import FingerprintedDataset, shape_mixed
+from usearchmolecules.dataset import FingerprintedDataset, inchikey_of
 
-data = FingerprintedDataset.open("data/example", shape=shape_mixed)
+data = FingerprintedDataset.open("data/example")
 
 # No inspiration? Pick a random molecule with `data.random_smiles()`
-results = data.search('CC(O)C(CN)=NNCC(C)(C)C', 100)
-
-results_keys = [r[0] for r in results]
-results_smiles = [r[1] for r in results]
-results_scores = [r[2] for r in results]
+for key, distance in data.search("CC(O)C(CN)=NNCC(C)(C)C", 100):
+    inchikey, stereo_flag = inchikey_of(key)   # the InChIKey PubChem or ChEMBL hold for the same compound
 ```
 
-Every key also carries its stored geometry, so a hit can be rendered or aligned without re-running a force field.
-`conformer` returns the molecule's lowest-energy conformer as `(xyz, energy)`, or `None` where the pipeline produced none:
+The key decodes back to a standard InChIKey, so a hit joins any other InChIKey source, and the same key finds the compound in every collection that holds it.
+
+PubChem compounds can also be searched by shape, with any conformer as the query, such as a row of the shards themselves:
 
 ```py
-xyz, energy = data.conformer(results_keys[0])   # (n_atoms, 3) float16, MMFF94 kcal/mol
+import numpy as np
+import pyarrow.parquet as pq
+
+row = pq.read_table("data/pubchem/parquet/0000000000-0001000000.3D.parquet").slice(0, 1).to_pylist()[0]
+cloud = np.asarray(row["points"][: row["n_atoms"]], dtype=np.float16)   # the lowest-energy conformer
+
+pubchem = FingerprintedDataset.open("data/pubchem")
+shaped_alike = pubchem.search_shapes(cloud, 10)                         # keys and Chamfer distances
 ```
 
-Coordinates follow the atom order of the largest fragment after `AddHs`, so they line up with a molecule rebuilt from the matching `smiles`.
+Proteins and antibodies open with one reader for all three collections, and search by global alignment:
+
+```py
+from usearchmolecules.dataset import SequenceDataset, sequence_key
+
+proteins = SequenceDataset.open("data/alphafold")
+entry = proteins.row(0)                   # sequence, accession, organism, gene, GO terms, Pfam domains
+trace, plddt = proteins.structure(0)      # (n_residues, 3) float16 Cα coordinates, uint8 confidence
+aligned = proteins.search([entry["sequence"]], 10)[0]
+
+antibodies = SequenceDataset.open("data/oas-paired")
+cell = antibodies.row(0)                  # both chains, their CDR3 loops, germline calls and identities
+assert cell["key_heavy"] == sequence_key(cell["sequence_heavy"])
+```
+
+Every search takes `residency="nvme"` to read a graph in place from the drive rather than load it, so a multi-terabyte graph answers queries on a machine with a fraction of that memory.
+A manifest such as `data/real/index-ecfp4.safegraphs` is searched like a single graph, its parts in turn.
+
+### Searching from the Command Line
+
+The same graphs are served by the `usearch` command line, which takes one sequence per line or one point cloud per query:
+
+```sh
+usearch sequence search data/alphafold/index-nw.safegraphs --query-texts my-proteins.txt --top-k 10
+usearch sequence search data/oas-unpaired/index-nw.safegraphs --query-texts my-chains.txt --residency nvme
+usearch shapes search data/pubchem/index-chamfer.safegraphs --query-points clouds.f16bin --query-counts clouds.ibin
+```
+
+Every match prints its `key`, so it joins straight back to the Parquet rows and, across collections, to every other row with the same compound or sequence.
 
 ## Exploring Dataset via Graphical Interface
 
-The dataset also comes with a graphical sandbox implemented with StreamLit and 3DMol.js to help visualize similarities between molecules.
+The dataset also comes with a graphical sandbox for small molecules, implemented with StreamLit and 3DMol.js to help visualize similarities between them.
 
 ```sh
 streamlit run streamlit_app.py
@@ -295,189 +221,152 @@ streamlit run streamlit_app.py
 
 Original data came from:
 
-- __NCBI PubChem__: [CID-SMILES archive](https://ftp.ncbi.nlm.nih.gov/pubchem/Compound/Extras/CID-SMILES.gz)
-- __University of Bern GDB13__: [GDB13 archive](https://zenodo.org/record/5172018/files/gdb13.tgz?download=1)
-- __Enamine REAL__: [CXSMILES archives](https://enamine.net/compound-collections/real-compounds/real-database), split by heavy-atom count
-- __Example__: drawn from the three above by `prep_sample`, not downloaded
+- __PubChem__: [CID-SMILES](https://ftp.ncbi.nlm.nih.gov/pubchem/Compound/Extras/CID-SMILES.gz)
+- __GDB-13__: [Bern archive](https://zenodo.org/record/5172018/files/gdb13.tgz?download=1)
+- __Enamine REAL__: [CXSMILES](https://enamine.net/compound-collections/real-compounds/real-database) by heavy-atom count
+- __Example__: sampled from the three by `prep_sample`
+- __AlphaFold DB v6__: [Foldseek](https://foldseek.steineggerlab.workers.dev/afdb.tar.gz) and [Foldcomp](https://foldcomp.steineggerlab.workers.dev/afdb_uniprot_v6) archives, CC BY 4.0
+- __UniProt__: [2025_03](https://ftp.uniprot.org/pub/databases/uniprot/previous_releases/release-2025_03/) and InterPro 106.0, CC BY 4.0 and CC0
+- __OAS__: [unpaired and paired units](https://opig.stats.ox.ac.uk/webapps/oas/), CC BY 4.0
 
 ### Pipeline
 
-The data processing pipeline consists of 5 steps, each implemented as a standalone script:
+The small-molecule shards come from the package's scripts and SmallField:
 
-1. `prep_parquet.py`: Convert raw datasets into standardized Parquet shards with SMILES strings.
-2. `prep_encode.py`: Add molecular fingerprints (MACCS, ECFP4, FCFP4, PubChem) to Parquet files.
-3. `prep_index.py`: Build USearch similarity indexes for fast nearest neighbor search.
-4. `prep_conformers.py`: Generate 3D conformers using ETKDG and optionally optimize with MMFF94.
-5. `prep_smiles.py`: Export SMILES strings to newline-delimited `.smi` files for [StringZilla][stringzilla].
+- `prep_parquet.py` converts each source into shuffled Parquet shards of SMILES strings.
+- `prep_encode.py` adds the MACCS, PubChem, ECFP4 and FCFP4 fingerprints.
+- [SmallField](https://github.com/unum-science/SmallField) embeds and relaxes the conformers and computes their USRCAT vectors into the `.3D.parquet` shards.
+- `prep_sample.py` draws the `example` collection from the three sources.
 
-Multiple passes over the finished shards then key every row and regroup the conformers:
-
-- Each 2D row is keyed by RDKit's standard InChI of its `smiles`, parsed with sanitization and, when RDKit refuses that, without it.
-  The InChIKey and the row's CXSMILES enhanced-stereo groups are packed into the UUIDv8 described under [What's Persisted](#whats-persisted).
-  Rows that InChI cannot name are dropped rather than given a substitute key.
-- Each 3D shard is regrouped from one row per conformer into one row per molecule, in the row order of its 2D shard, keeping only embedded conformers.
-
-Every script is designed to work with bigger-than-memory data.
-In other words, processing 1 TB of molecules doesn't require 1 TB of RAM.
-Everything happens in a "gliding-window" fashion, with computationally intensive parts split between processes and threads.
+Every script works with bigger-than-memory data in a "gliding-window" fashion, splitting the heavy parts between processes and threads, so processing 1 TB of molecules doesn't require 1 TB of RAM.
 
 ```sh
 uv run python -m usearchmolecules.prep_parquet --datasets example
 uv run python -m usearchmolecules.prep_encode --datasets example
-uv run python -m usearchmolecules.prep_index --datasets example
-uv run python -m usearchmolecules.prep_smiles --datasets example
-uv run python -m usearchmolecules.prep_conformers --datasets example
 ```
 
-Once completed, datasets have been uploaded to S3:
+Multiple passes over the finished shards then key every row and regroup the conformers:
+
+- Each 2D row is keyed by RDKit's standard InChI of its `smiles`, parsed with sanitization and, when RDKit refuses that, without it.
+  The InChIKey and the row's CXSMILES enhanced-stereo groups are packed into the UUIDv8 that `inchikey_of` decodes.
+  Rows that InChI cannot name are dropped rather than given a substitute key.
+- Each 3D shard is regrouped from one row per conformer into one row per molecule, in the row order of its 2D shard, keeping only embedded conformers.
+
+The protein and antibody collections are converted from their archives in one pass each, natively rather than through these scripts:
+
+- Every row is kept, including identical sequences and partial domains, and shuffled once with seed 42 before sharding.
+- Each row is keyed by the MD5 of its uppercase amino-acid sequence, and a paired cell by the MD5 of its two chain keys.
+- OAS run metadata is inlined into every row as dictionary columns rather than kept in a side table.
+- UniProt and InterPro annotations join AlphaFold rows by accession, and only where the UniProt entry holds the same sequence.
+
+The graphs are built with the `usearch` command line over the finished shards, inserting every row and then refining the whole graph until 99 % of queries find their exact nearest neighbor at a search expansion that keeps queries cheaper than inserts:
+
+- ECFP4 graphs use connectivity 64 and Hamming distance over the 2048-bit fingerprint.
+- The PubChem Chamfer graph is built in parts over each molecule's lowest-energy conformer with hydrogens, then absorbed into one graph and refined.
+- Needleman-Wunsch graphs index each distinct sequence once, scoring global alignments under BLOSUM62 with linear gaps, and are built in parts across machines.
+
+Once completed, every collection is uploaded to S3 with `cp` rather than `sync`, so a shard of the same size as its predecessor is never skipped:
 
 ```sh
-aws s3 sync data/example/parquet/ s3://usearch-molecules/data/example/parquet/
-aws s3 sync data/pubchem/parquet/ s3://usearch-molecules/data/pubchem/parquet/
-aws s3 sync data/gdb13/parquet/ s3://usearch-molecules/data/gdb13/parquet/
-aws s3 sync data/real/parquet/ s3://usearch-molecules/data/real/parquet/
+for collection in example pubchem gdb13 real alphafold oas-unpaired oas-paired; do
+    aws s3 cp --recursive --storage-class INTELLIGENT_TIERING data/$collection/ s3://usearch-molecules/data/$collection/
+done
 ```
-
-[stringzilla]: https://github.com/ashvardanian/StringZilla
 
 ### Understanding Fingerprints
 
-Not all per-molecule vectors in this dataset are interchangeable, and using one where another is required produces silently wrong answers.
-They divide into three families with distinct query semantics:
-
-1. __Similarity vectors__: hashed circular fingerprints such as ECFP4 and FCFP4, and the atom-pair and topological-torsion variants.
-2. __Substructure flags__: dictionary fingerprints MACCS and PubChem, plus the SMARTS-catalog bits from the alerts, functional-group, pharmacophore, and reaction-template collections.
-3. __Geometric shape descriptors__: USR and USRCAT, computed per 3D conformer.
-
-The first family encodes local atomic environments and folds them via hashing into a fixed bitvector.
-Individual bits have no chemical meaning — hash collisions are expected and harmless, because these vectors are designed for whole-molecule comparison via Tanimoto or cosine similarity.
-They power _"show me molecules similar to X"_ queries, but cannot be used for substructure search: a bit-subset relationship between query and target does not imply structural containment.
-
-The second family assigns one bit per named SMARTS pattern, so each bit has a defined chemical meaning.
-They are sound for substructure screening — if every bit set in a query is also set in a candidate, the candidate is guaranteed to contain the corresponding patterns.
-They make poor general similarity vectors, because most bits are zero for any single molecule and small structural changes flip many bits at once.
-
-The third family is the only one that is not binary.
-USR and USRCAT are short floating-point vectors derived from each conformer's distribution of atom-to-reference-point distances, translation- and rotation-invariant by construction.
-Cosine similarity in this space corresponds to overall 3D shape similarity without Kabsch alignment or atom-count matching, which is what enables _"find molecules shaped like this one even if their 2D structure differs"_ — the canonical scaffold-hop query that 2D fingerprints cannot answer.
-
-A useful search pipeline chains all three: a similarity-vector prefilter to find a candidate neighbourhood, a substructure-flag gate to drop alerts and filter by chemical class, and a shape-descriptor ranking by 3D similarity at the end.
+Not all per-molecule vectors are interchangeable, and using one where another is required produces silently wrong answers.
+ECFP4 and FCFP4 hash local environments into bits with no chemical meaning, for whole-molecule similarity; MACCS and PubChem assign one bit per named pattern, for substructure screening; USRCAT describes each conformer's 3D shape.
+A useful pipeline chains all three: a similarity prefilter, a substructure gate, and a shape ranking at the end.
+The [`to_fingerprint`](https://github.com/unum-science/USearchMolecules/blob/main/usearchmolecules/to_fingerprint.py) module documents each family and its query semantics.
 
 ### What's Persisted
 
-Each Parquet shard stores the columns below.
-The guiding principle is: __cache what's expensive to recompute, skip what's cheap to reconstruct from SMILES__.
+The guiding principle is: __cache what's expensive to recompute, skip what's cheap to reconstruct__.
+Conformer generation with ETKDG + MMFF costs 60-600 ms per molecule, while parsing a SMILES string back into a full molecular graph takes under 0.2 ms, so the coordinates are persisted and the molecular graph is not.
 
-Conformer generation with ETKDG + MMFF costs 60-600 ms per molecule depending on size and conformer count.
-By contrast, parsing a SMILES string back into a full molecular graph with atom types, bond topology, formal charges, and stereochemistry takes under 0.2 ms.
-That 300-3000x cost gap is why we persist 3D coordinates but not the molecular graph.
+__Small-molecule shard__ `parquet/<range>.parquet`, one row per compound:
 
-The 2D fingerprints and the 3D conformers live in __two separate Parquet files per shard__, sharing a stem: `parquet/<range>.parquet` for fingerprints and `parquet/<range>.3D.parquet` for conformers, both with __one row per molecule__ in the same order.
+- `key`, `binary(16)`: an RFC 9562 UUIDv8 packing the standard InChIKey and the CXSMILES enhanced-stereo flag, decoded by `inchikey_of`; sorting the bytes sorts by InChIKey.
+- `smiles`, `utf8`, ~50 B: the canonical graph with atoms, bonds, charges and stereochemistry.
+- `maccs`, `binary(21)`: MACCS structural keys, 166 bits.
+- `ecfp4`, `binary(256)`: extended-connectivity fingerprint, radius 2, 2048 bits.
+- `fcfp4`, `binary(256)`: functional-class fingerprint, radius 2, 2048 bits.
+- `pubchem`, `binary(111)`: PubChem substructure fingerprint, 881 bits, computed with CDK.
 
-__Fingerprint shard__ `parquet/<range>.parquet`:
+__Conformer shard__ `parquet/<range>.3D.parquet`, up to three conformers per compound, lowest energy first:
 
-| Column    | Type          | Typical Size | Description                                              |
-| :-------- | :------------ | -----------: | :------------------------------------------------------- |
-| `key`     | `binary(16)`  |         16 B | Compound identity, see below.                            |
-| `smiles`  | `utf8`        |        ~50 B | Canonical graph: atoms, bonds, charges, stereochemistry. |
-| `maccs`   | `binary(21)`  |         21 B | MACCS structural keys, 166 bits.                         |
-| `ecfp4`   | `binary(256)` |        256 B | Extended-connectivity fingerprint, radius 2, 2048 bits.  |
-| `fcfp4`   | `binary(256)` |        256 B | Functional-class fingerprint, radius 2, 2048 bits.       |
-| `pubchem` | `binary(111)` |        111 B | PubChem substructure fingerprint, 881 bits. Needs CDK.   |
+- `key`, `binary(16)`: the 2D row's key.
+- `n_atoms`, `n_heavy_atoms`, `n_bonds`, `uint16`: counts of the conformed fragment, hydrogens included in `n_atoms`.
+- `molecular_weight`, `float32`: exact mass in Daltons.
+- `energies`, `list<float32>`: MMFF94 energy per conformer in kcal/mol, ascending.
+- `points`, `list<fixed_size_list<float16, 3>>`: every conformer's atoms end to end, centroid-centered.
+- `usrcat`, `list<fixed_size_list<float16, 60>>`: one USRCAT shape vector per conformer, whose first 12 values are USR.
 
-__The `key` column__ holds an RFC 9562 UUIDv8 as 16 big-endian bytes, and the same bytes identify the molecule in its 3D row and in every index.
-Its 122 custom bits hold a 117-bit payload, `P << 2 | flag`, zero-extended and placed big-endian around the fixed version and variant fields, so sorting the bytes sorts by InChIKey and then by flag:
-
-- `P` is the standard InChIKey `XXXXXXXXXXXXXX-YYYYYYYYFV-P`: its 22 block letters as one base-26 number, most significant first, then one bit for `F`, five for `V` and five for the protonation letter `P`.
-- `flag` records the CXSMILES enhanced-stereo groups that standard InChI ignores: `0` for none or only `a:` absolute groups, `1` for `&` AND groups, meaning racemic or relative, `2` for `o` OR groups, and `3` for both.
-
-Decoding returns the InChIKey that PubChem, ChEMBL or any other InChIKey source holds for the same compound:
-
-```python
-def inchikey_of(key: bytes) -> tuple[str, int]:
-    value = int.from_bytes(key, "big")
-    payload = (value >> 80) << 74 | ((value >> 64) & 0xFFF) << 62 | value & ((1 << 62) - 1)
-    flag, packed = payload & 3, payload >> 2
-    protonation, packed = packed & 31, packed >> 5
-    version, packed = packed & 31, packed >> 5
-    standard, packed = packed & 1, packed >> 1
-    letters = ""
-    for _ in range(22):
-        packed, letter = divmod(packed, 26)
-        letters = chr(65 + letter) + letters
-    return f"{letters[:14]}-{letters[14:]}{'S' if standard else 'N'}{chr(65 + version)}-{chr(65 + protonation)}", flag
-```
-
-__Conformer shard__ `parquet/<range>.3D.parquet`, with up to `K = 3` conformers per row, lowest energy first:
-
-| Column             | Type                                 | Description                                         |
-| :----------------- | :----------------------------------- | :-------------------------------------------------- |
-| `key`              | `binary(16)`                         | The 2D row's key.                                   |
-| `n_atoms`          | `uint16`                             | Total atoms incl. H.                                |
-| `n_heavy_atoms`    | `uint16`                             | Heavy-atom count.                                   |
-| `n_bonds`          | `uint16`                             | Bond count.                                         |
-| `molecular_weight` | `float32`                            | Exact mass in Daltons.                              |
-| `energies`         | `list<float32>`                      | MMFF94 energy per conformer in kcal/mol, ascending. |
-| `points`           | `list<fixed_size_list<float16, 3>>`  | Every conformer's atoms, end to end.                |
-| `usrcat`           | `list<fixed_size_list<float16, 60>>` | One USRCAT shape vector per conformer.              |
-
-Conformer `c` of a row is `points[c * n_atoms : (c + 1) * n_atoms]`, and `len(energies)` counts the row's conformers.
-The 12-dimensional USR descriptor is the first 12 values of each `usrcat` vector.
-
-__Only embedded conformers are stored.__
-A conformer that fails to embed or polish is left out, so a row can hold fewer than three, and the pipeline's per-conformer failure codes are not persisted.
-A molecule refused before embedding, above the atom ceiling, with an element MMFF94 cannot type, or with more rings than the pipeline handles, has empty lists and null counts.
-
-Coordinates are centroid-centered — orientation is not canonicalized.
-Each shard also carries schema-level key-value metadata recording provenance: producer git SHA, `num_conformers`, `max_atoms`, dataset, coordinate frame, schema version, key layout and conformer layout.
-`max_atoms` is 192 and counts hydrogens; a molecule above it is refused whole and has no conformers.
-
-Coordinates are stored as IEEE 754 `float16` and not `bfloat16`, because PyArrow and the Parquet specification natively support `float16`, while `bfloat16` has no Parquet encoding.
-The quantization error from `float64` to `float16` is under 0.002 Angstroms for any coordinate within 8 Angstroms of the centroid, and under 0.008 Angstroms beyond it, where the `float16` grid spacing doubles.
-Both bounds sit well below thermal noise at room temperature of ~0.1 Angstroms.
-
-__What we intentionally don't store:__
-
-- __Bond topology__ — atom pairs plus bond orders — this is literally what SMILES encodes.
-  `C-C(=O)-O` directly specifies which atoms connect and by what bond type.
-- __Atom types__ — element per atom index — every letter in the SMILES string IS the atom type.
-  After `AddHs`, hydrogen placement is deterministic.
-- __Formal charges__ — integer per atom — encoded explicitly in SMILES brackets, e.g. `[NH3+]`, `[O-]`.
-- __Stereochemistry__ — chirality, E/Z geometry — encoded with `@`/`@@` and `/`/`\` in SMILES, and also inferable from the 3D coordinates.
-
-All four are losslessly recoverable from the `smiles` column in under 0.2 ms via `Chem.MolFromSmiles` + `AddHs`.
-
-__One caveat for multi-fragment SMILES.__
-Where a SMILES names more than one disconnected fragment — a salt, a counter-ion, a mixture — the conformer covers only the fragment the pipeline kept, while the `smiles` column retains the whole string.
-About 9 % of PubChem rows are affected; GDB13 and Enamine REAL are not.
-Reproduce the pipeline's choice with RDKit's `LargestFragmentChooser` under `preferOrganic`, which keeps the organic parent even when a metal cluster carries more atoms:
-
-```python
-from rdkit import Chem
-from rdkit.Chem.MolStandardize import rdMolStandardize
-
-chooser = rdMolStandardize.LargestFragmentChooser(preferOrganic=True)
-mol = chooser.choose(Chem.MolFromSmiles(row["smiles"]))
-Chem.SanitizeMol(mol)   # ring perception is stale once atoms are removed
-mol = Chem.AddHs(mol)   # now mol.GetNumAtoms() == row["n_atoms"]
-```
-
-Selecting the largest fragment by raw atom count instead reproduces most of these rows but not all of them.
-
-To read conformers back into NumPy arrays:
+Conformer `c` of a row is `points[c * n_atoms : (c + 1) * n_atoms]`, and `len(energies)` counts the row's conformers:
 
 ```python
 import numpy as np
 
-# One row is one molecule; its conformers sit end to end in `points`, lowest energy first.
 energies = row["energies"]                                                   # MMFF94 energies, kcal/mol
 xyz = np.asarray(row["points"], dtype=np.float16).reshape(len(energies), row["n_atoms"], 3)
 usrcat = np.asarray(row["usrcat"], dtype=np.float16)                        # (len(energies), 60); USR is usrcat[:, :12]
 ```
 
-For a typical drug-like molecule of ~40 atoms including hydrogens with 3 conformers, the coordinates take ~1.4 KB in `float16` versus ~15 KB for the previous SDF text format - a ~10x reduction; the 60-dim `usrcat` adds ~360 B per conformer.
+Coordinates follow the atom order of the largest fragment after `AddHs`, so they line up with a molecule rebuilt from the matching `smiles`, and orientation is not canonicalized.
+They are stored as `float16` rather than `bfloat16`, since Parquet encodes the former natively, and the rounding stays under 0.002 Å within 8 Å of the centroid and under 0.008 Å beyond it, well below thermal motion of about 0.1 Å.
+Bond topology, atom types, formal charges and stereochemistry are not stored, because the `smiles` column encodes all four and RDKit's `MolFromSmiles` with `AddHs` recovers them losslessly.
+
+__Protein shard__ `alphafold/parquet/<range>.parquet`, one row per AlphaFold DB entry:
+
+- `key`, `binary(16)`: MD5 of the uppercase amino-acid sequence.
+- `sequence`, `utf8`: one-letter amino-acid codes.
+- `uniprot_accession` and `afdb_entry`, `utf8`: like `A0A0N7M9J1` and `AF-A0A0N7M9J1-F1-model_v6`.
+- `fragment`, `uint16`: the fragment number of proteins split into several models.
+- `taxonomy_id`, `uint32`: the NCBI taxon, null when unknown.
+- `organism` and `domain`, `dictionary`: the taxon's scientific name, and Bacteria, Archaea, Eukaryota or a viral realm.
+- `description`, `utf8`: the recommended protein name from UniProt.
+- `reviewed`, `bool`: curated in Swiss-Prot rather than predicted in TrEMBL.
+- `gene`, `dictionary`: the primary gene name.
+- `ec_numbers`, `list<utf8>`: Enzyme Commission classes.
+- `go_terms`, `list<uint32>`: Gene Ontology term numbers, `GO:0005524` stored as `5524`.
+- `pfam_domains`, `list<utf8>`: Pfam families matched along the sequence, in order of start.
+
+__Structure shard__ `alphafold/parquet/<range>.3D.parquet`, row-aligned with the protein shard:
+
+- `key`, `binary(16)`: the protein row's key.
+- `n_residues`, `uint16`: residues, one Cα each.
+- `points`, `list<fixed_size_list<float16, 3>>`: Cα coordinates in Å, centered on their centroid.
+- `plddt`, `list<uint8>`: AlphaFold's confidence per residue, from 0 to 100.
+
+__Antibody chain shard__ `oas-unpaired/parquet/<range>.parquet`, one row per chain as OAS lists it:
+
+- `key`, `binary(16)`: MD5 of the uppercase amino-acid sequence.
+- `sequence` and `cdr3`, `utf8`: the variable domain and its third complementarity-determining region.
+- `regions`, `binary(7)`: lengths of FWR1, CDR1, FWR2, CDR2, FWR3, CDR3 and FWR4.
+- `v_call`, `d_call`, `j_call` and `locus`, `dictionary`: germline gene assignments and `IGH`, `IGK` or `IGL`.
+- `redundancy`, `uint32`: times the sequence was observed in its run.
+- `v_identity` and `j_identity`, `float32`: percent identity to the assigned V and J germline genes.
+- `study`, `file`, `run`, `author`, `link`, `species`, `age`, `b_source`, `b_type`, `vaccine`, `disease`, `subject`, `longitudinal`, `isotype` and `chain`, `dictionary`: the run's metadata, inlined.
+
+`oas-paired` stores the same per-chain columns twice, suffixed `_heavy` and `_light`, beside `key_heavy` and `key_light`, and keys the cell as `MD5(key_heavy ‖ key_light)`.
 
 ### Limits and Caveats
+
+__Two atom counts matter for small molecules, and they are far apart.__
+The `smiles` column implies a heavy-atom count, but any force field or 3D pipeline works on the molecule after explicit hydrogens are added, which is roughly twice as large.
+Measured on a stratified sample — shards spread across each subset's full index range, a random row group per shard, uniform rows within it, largest fragment only:
+
+| Subset    | Heavy p50 / p95 / p99 / max | With H p50 / p95 / p99 / max | Over 192 Atoms |
+| :-------- | :-------------------------- | :--------------------------- | -------------: |
+| `pubchem` | 24 / 49 / 79 / 202          | 46 / 90 / 168 / 412          |         0.68 % |
+| `gdb13`   | 13 / 13 / 13 / 13           | 27 / 32 / 34 / 39            |         0.00 % |
+| `real`    | 27 / 29 / 30 / 34           | 52 / 61 / 64 / 70            |         0.00 % |
+
+PubChem is the only subset with a large-molecule tail, and its p99 is where the two counts diverge most — 79 heavy atoms become 168 with hydrogens.
+GDB-13 is a spike rather than a distribution, since every molecule is enumerated at exactly 13 heavy atoms.
+Enamine REAL is lead-like and narrow, which is why it never approaches a 192-atom ceiling.
+Shards are not ordered by molecule size, so the first N shards of a subset are a fair sample of its size distribution.
 
 __Conformer yield is not 100 %, and the shortfall is a size effect.__
 Measured over a stratified sample of the three sources, and over all of `example`:
@@ -492,7 +381,7 @@ Measured over a stratified sample of the three sources, and over all of `example
 `example` reads better than its sources because it is drawn from molecules whose first conformer succeeded, so it inherits none of their outright failures.
 PubChem holds the only meaningful shortfall, and it is concentrated in the tail.
 Yield stays near 99.95 % below 75 atoms and falls to 77.6 % in the 175-to-192-atom band.
-GDB13 and Enamine REAL are narrow enough that they never approach the ceiling.
+A conformer that fails to embed or polish is left out, and a molecule refused before embedding, above the 192-atom ceiling, with an element MMFF94 cannot type, or with more rings than the pipeline handles, has empty lists and null counts.
 
 __An embedded conformer's energy is finite, not necessarily low.__
 Conformers far above their own molecule's minimum are structures the minimiser never relaxed, and they are still stored.
@@ -505,16 +394,32 @@ usable = [c for c, energy in enumerate(row["energies"]) if energy - row["energie
 
 At a 100 kcal/mol gap this affects roughly 7 % of GDB13 molecules, whose small bridged cages ETKDG struggles to embed, against about 1 % of PubChem and Enamine REAL.
 Because conformers are stored energy-sorted, the affected conformer is almost always the last of the three, and the first is the safest single geometry to consume.
+The conformers of one molecule are diverse enough that deduplication would discard little: median inter-conformer Kabsch RMSD is 1.45 Å for PubChem, 1.08 Å for GDB13 and 1.50 Å for Enamine REAL.
+
+__Multi-fragment SMILES keep a conformer for one fragment only.__
+Where a SMILES names more than one disconnected fragment — a salt, a counter-ion, a mixture — the conformer covers only the fragment the pipeline kept, while the `smiles` column retains the whole string.
+About 9 % of PubChem rows are affected; GDB13 and Enamine REAL are not.
+Reproduce the pipeline's choice with RDKit's `LargestFragmentChooser` under `preferOrganic`, which keeps the organic parent even when a metal cluster carries more atoms:
+
+```python
+from rdkit import Chem
+from rdkit.Chem.MolStandardize import rdMolStandardize
+
+chooser = rdMolStandardize.LargestFragmentChooser(preferOrganic=True)
+mol = chooser.choose(Chem.MolFromSmiles(row["smiles"]))
+Chem.SanitizeMol(mol)   # ring perception is stale once atoms are removed
+mol = Chem.AddHs(mol)   # now mol.GetNumAtoms() == row["n_atoms"]
+```
 
 __A key names a compound, not a row, so several rows can share one.__
 Standard InChI merges different spellings of one structure, mobile-hydrogen tautomers and some charge and protonation forms, and every such row stays in the dataset:
 
-| Subset    |          Rows | Shared-key groups | Rows in those groups | Largest group |
-| :-------- | ------------: | ----------------: | -------------------: | ------------: |
-| `pubchem` |   115'627'256 |           297'068 |              636'297 |            27 |
-| `example` |     2'000'000 |                53 |                  106 |             2 |
-| `gdb13`   |   977'468'267 |        10'190'883 |           21'636'255 |            10 |
-| `real`    | 6'039'411'650 |         9'553'952 |           19'470'151 |             … |
+| Subset    |          Rows | Shared-key groups | Rows in groups | Largest |
+| :-------- | ------------: | ----------------: | -------------: | ------: |
+| `pubchem` |   115'627'256 |           297'068 |        636'297 |      27 |
+| `example` |     2'000'000 |                53 |            106 |       2 |
+| `gdb13`   |   977'468'267 |        10'190'883 |     21'636'255 |      10 |
+| `real`    | 6'039'411'650 |         9'553'952 |     19'470'151 |       … |
 
 Most GDB13 groups are tautomers, which GDB13 enumerates as separate molecules.
 PubChem groups mix salts beside their free bases, tautomers, and identical structures registered under several CIDs.
@@ -526,6 +431,23 @@ The same key also links subsets, so about 14.6 million PubChem compounds can be 
 __Eleven PubChem rows are not in the dataset.__
 Seven are a bare `*` dummy atom, three are mixtures with a `*` fragment, and one is a polymer, and standard InChI cannot name any of them, so they have no key.
 Each of the eleven shards that held them lost that one row.
+
+__A sequence key names a sequence, not an entry, and the graphs index each key once.__
+AlphaFold DB models 241'070'489 entries but only 220'322'986 distinct sequences, and the largest group of identical sequences spans 11'140 entries across strains and species.
+OAS lists the same chain in many runs, donors and studies, and every listing stays a row.
+A Needleman-Wunsch match is therefore a sequence, and joining its key back to the shards returns every entry, run or cell that holds it.
+
+__UniProt annotations are present only where they still describe the modeled sequence.__
+AlphaFold DB follows UniProt 2025_03, and an annotation is attached only when that release holds the accession with an identical sequence.
+Rows whose entry was merged, retired or edited keep null annotation columns rather than borrowing another sequence's function.
+
+__pLDDT qualifies the coordinates beside it.__
+Residues below about 50 are commonly disordered, and their Cα positions are a placeholder rather than a structure, so mask them before aligning or measuring distances.
+
+__Antibody rows keep partial and unusual chains.__
+About 0.59 % of OAS chains do not tile cleanly into the seven framework and CDR regions, and their `regions` is null while the sequence and calls remain.
+Germline identity is missing for 1 chain on V and 7'147 chains on J, where OAS left the field empty.
+Neither collection carries antigen labels, so what an antibody binds is not part of the dataset.
 
 ## Related Work
 
@@ -539,6 +461,9 @@ Both are distribution rather than retrieval.
 OpenEye's ROCS and FastROCS score Gaussian volume overlap over the whole geometry rather than a descriptor of it, but the work scales with the corpus on every query, the scoring is closed, and the alignment is a local optimum over whatever conformers were generated.
 BioSolveIT's SpaceGrow never enumerates, searching billions on one CPU core by growing molecules from synthons, but works only inside a reaction space and cannot cluster an arbitrary set.
 
+For proteins and antibodies, Foldseek and MMseqs2 search AlphaFold DB by structure and sequence through their own prefilters, and the OAS web interface searches its chains by sequence identity.
+Neither ships the shards and the graph together, so a result cannot be joined to annotations, conformers or another corpus without re-indexing it.
+
 USearchMolecules keeps the corpus indexed across modalities, so a substructure screen, a similarity sweep and a shape query all run against the same shards.
 
 ## Citation
@@ -548,7 +473,7 @@ If USearchMolecules helps your research or product, please cite it:
 ```bibtex
 @software{Vardanian_USearchMolecules,
   author = {Vardanian, Ash},
-  title = {{USearchMolecules: A Multi-Modal Atlas of 7 Billion Small Molecules}},
+  title = {{USearchMolecules: An Open, Searchable Atlas of Chemical and Biological Entities}},
   doi = {10.5281/zenodo.21613663},
   url = {https://github.com/unum-science/USearchMolecules},
   license = {Apache-2.0}

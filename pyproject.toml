@@ -17,10 +17,13 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Chemistry",
   "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
-description = "Large Multi-Modal Chem-Informatics dataset of 7B+ molecules with fingerprints and 3D conformers for drug discovery"
+description = "Open, searchable atlas of chemical and biological entities, from small molecules to proteins and antibodies, with USearch graphs"
 keywords = [
   "molecules",
   "chemistry",
+  "biology",
+  "proteins",
+  "antibodies",
   "drug-discovery",
   "fingerprints",
   "conformers",
