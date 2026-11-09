@@ -44,7 +44,7 @@ configs:
 
 # USearch Molecules
 
-An open, searchable atlas of chemical and biological entities, from small molecules to the proteins and antibodies they are designed against.
+An open, searchable atlas of chemical and biological entities, from small molecules to the proteins they target and the antibodies that bind them.
 Every entity is one row under a permanent key derived from the entity itself, with its representations and search graphs added beside the same rows over time.
 
 Start with `example`: 2 million molecules drawn from all three sources, 4 GB, carrying everything the larger subsets do.

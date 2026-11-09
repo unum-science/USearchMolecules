@@ -1,6 +1,6 @@
 # USearchMolecules
 
-USearchMolecules is an open, searchable atlas of chemical and biological entities: the small molecules people make, screen and buy, and the proteins and antibodies those molecules are designed against.
+USearchMolecules is an open, searchable atlas of chemical and biological entities: the small molecules people make, screen and buy, the proteins they target and the antibodies that bind them.
 Every entity is one row under a permanent key derived from the entity itself, so a compound or a sequence lands on the same key in every collection that holds it.
 Everything computed about an entity, from fingerprints and conformers to predicted structures and germline calls, is added beside the same rows, together with the graphs that link each entity to its nearest neighbors.
 New collections, representations and annotations extend the atlas without renumbering what is already there.
@@ -144,7 +144,6 @@ done
 ```
 
 Add `--exclude "index-*"` to fetch only the shards and leave the graphs behind, or drop the path to browse: `aws s3 ls --no-sign-request s3://usearch-molecules/data/`.
-The Nebius and Hugging Face copies still hold the previous schema until they are refreshed.
 
 ### Searching from Python
 

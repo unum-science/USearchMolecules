@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+#
+# USearchMolecules commit-msg hook.
+
+set -u
+
+if grep -qiE 'co-authored-by:.*(claude|anthropic)|generated with \[?claude|Claude-Session:' "$1"; then
+    echo "commit-msg: assistant attribution must not appear in the message." >&2
+    exit 1
+fi

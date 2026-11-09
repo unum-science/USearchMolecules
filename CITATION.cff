@@ -3,15 +3,13 @@ title: "USearchMolecules: An Open, Searchable Atlas of Chemical and Biological E
 message: "If you use this dataset, please cite it as below."
 type: dataset
 license: Apache-2.0
-version: 3.0.0
-date-released: "2026-07-31"
 repository-code: https://github.com/unum-science/USearchMolecules
 url: https://ashvardanian.com/posts/usearch-molecules/
 doi: 10.5281/zenodo.21613663
 abstract: >-
   USearchMolecules is an open, searchable atlas of chemical and biological entities, from the
-  small molecules people make, screen and buy to the proteins and antibodies they are designed
-  against. Every entity is one Parquet row under a permanent key derived from the entity itself,
+  small molecules people make, screen and buy to the proteins they target and the antibodies that
+  bind them. Every entity is one Parquet row under a permanent key derived from the entity itself,
   so a compound or a sequence keeps one key across collections and releases, while fingerprints,
   conformers, predicted structures and germline calls are added beside the same rows together
   with USearch graphs that link each entity to its nearest neighbors. It is distributed as
@@ -21,9 +19,9 @@ keywords:
   - cheminformatics
   - bioinformatics
   - molecular similarity search
-  - molecular fingerprints
+  - molecular fingerprint
   - protein structure
-  - antibody repertoires
+  - antibody repertoire
   - vector search
   - open data
 
@@ -37,13 +35,12 @@ references:
   - type: article
     title: "USearch Molecules: 28 Billion Chemical Embeddings on AWS"
     url: https://ashvardanian.com/posts/usearch-molecules/
-    date-published: 2023-11-20
     authors:
       - family-names: Vardanian
         given-names: Ash
         orcid: https://orcid.org/0000-0002-4882-1815
   - type: software
-    title: "USearch: Smaller & Faster Similarity Search & Clustering Engine"
+    title: "USearch: One Proximity Graph for Search, Sparse Products and Attention, across RAM, VRAM and NVMe"
     url: https://github.com/unum-cloud/USearch
     doi: 10.5281/zenodo.7949415
     authors:
@@ -51,7 +48,7 @@ references:
         given-names: Ash
         orcid: https://orcid.org/0000-0002-4882-1815
   - type: software
-    title: "StringZilla: Fast SIMD, SWAR, and GPGPU String Processing"
+    title: "StringZilla: SIMD, SWAR and GPU Kernels for String Search, Hashing, Sorting, Unicode and Edit Distances"
     url: https://github.com/ashvardanian/StringZilla
     doi: 10.5281/zenodo.21472332
     authors:
@@ -59,7 +56,7 @@ references:
         given-names: Ash
         orcid: https://orcid.org/0000-0002-4882-1815
   - type: software
-    title: "NumKong: 2000 Mixed Precision Kernels For All"
+    title: "NumKong: Mixed-Precision Kernels for SIMD and Matrix Units, from 4-Bit Integers to 128-Bit Complex Numbers"
     url: https://github.com/ashvardanian/NumKong
     doi: 10.5281/zenodo.21480519
     authors:

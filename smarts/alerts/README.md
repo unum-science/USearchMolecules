@@ -1,4 +1,4 @@
-# Structural alerts
+# Structural Alerts
 
 Reactive-group, PAINS, toxicophore, and screening-deck filters from pharma and academic sources.
 Used as a substructure-screen layer on similarity-search results — e.g. _"find ECFP4-similar molecules to X that are PAINS-clean and don't match any AbbVie ALARM-NMR alert."_
@@ -10,7 +10,7 @@ Per-source provenance, complexity numbers, and matching gotchas follow below.
 
 The _Patterns_ column and parse-rate are computed; everything else is provenance.
 
-### Pharma-attributed
+### Pharma-Attributed
 
 | File                     | Patterns | Origin                                         | Citation                                               | License               |
 | ------------------------ | -------: | ---------------------------------------------- | ------------------------------------------------------ | --------------------- |
@@ -23,7 +23,7 @@ The _Patterns_ column and parse-rate are computed; everything else is provenance
 | `pfizer_stepan.jsonl`    |       21 | Pfizer / idiosyncratic-toxicity alerts         | Stepan et al. 2011, _Chem. Res. Toxicol._ 24, 1345     | hand-encoded          |
 | `abbvie_alarm.jsonl`     |       11 | Abbott / AbbVie ALARM-NMR thiol-reactives      | Huth et al. 2005, _J. Am. Chem. Soc._ 127, 217         | hand-encoded          |
 
-### Academic and aggregated
+### Academic and Aggregated
 
 | File                      | Patterns | Origin                                        | Citation                                           | License            |
 | ------------------------- | -------: | --------------------------------------------- | -------------------------------------------------- | ------------------ |
@@ -45,7 +45,7 @@ The _Patterns_ column and parse-rate are computed; everything else is provenance
 | `michael_acceptors.jsonl` |        9 | Michael acceptor structural alerts            | via Toxtree `toxtree-michaelacceptors`             | LGPL-2.1 (Toxtree) |
 | `eye_irritation.jsonl`    |       46 | Eye-irritation alert plugin                   | Gerner et al.; via Toxtree                         | LGPL-2.1 (Toxtree) |
 
-## On the LGPL-2.1 entries
+## On the LGPL-2.1 Entries
 
 Six files (`benigni_bossa`, `iss_ames`, `iss_micronucleus`, `cramer3`, `michael_acceptors`, `eye_irritation`) were derived from Toxtree (https://toxtree.sourceforge.net/) by regex-extracting SMARTS strings from the project's Java rule-class source files.
 Toxtree is __LGPL-2.1__, and each derived record carries `"license": "LGPL-2.1"` so the constraint travels with the data even if files are reorganized.
@@ -90,7 +90,7 @@ __Pharmas with no public SMARTS catalog__ — verified across rd_filters, ChEMBL
 Their alert lists are internal.
 Vertex/Schering-Plough's REOS (Walters & Murcko 2002) was never released as a canonical SMARTS file; the closest public artifact is the bundle in Pat Walters' `rd_filters`, which is a re-bundle of the public sets we already have.
 
-## JSONL record schema
+## JSONL Record Schema
 
 Every `.jsonl` line is one self-contained JSON object.
 The required core is three fields; everything else is optional and only present when the source provides the data.
@@ -132,7 +132,7 @@ __Source-specific extras__:
 - NIBR: `original_set`, `num_matches_pubchem_2018`.
 - Hand-encoded sources: `paper_section` referencing the figure or table number.
 
-## Per-source complexity
+## Per-Source Complexity
 
 Numbers are __median / p95 / max__ across all patterns in the source.
 
@@ -167,7 +167,7 @@ _Chirality_ is `@` inside `[...]` summed across the source; _Ring-bond_ is `@` o
 | `eye_irritation`    |       46 |    46/46 |     0 / 4 / 19      |     1     |       1 / 3 / 5        |         0 |         0 |          1 |            70 |     8 / 14 / 20     |
 | `michael_acceptors` |        9 |      9/9 |      0 / 0 / 0      |     0     |       0 / 5 / 5        |         0 |         0 |          0 |             6 |     5 / 12 / 12     |
 
-## Extreme patterns
+## Extreme Patterns
 
 The single largest pattern in each category, across all 25 sources.
 SMARTS strings truncated to 100 characters; full strings are in the source `.jsonl` files.
@@ -183,7 +183,7 @@ SMARTS strings truncated to 100 characters; full strings are in the source `.jso
 | Most ring-bond annotations            |   __17__ | `nibr`        | `polycyclic_systems_18_atoms` | `a@;:a@;:a@;:a@;:a@;:a@;:a@;:a@;:a@;:a@;:a@;:a@;:a@;:a@;:a@;:a@;:a@;:a` |
 | Most `.` fragment delimiters          |    __6__ | `bms`         | `gte_7_aliphatic_OH`          | `C[O;D1].C[O;D1].C[O;D1].C[O;D1].C[O;D1].C[O;D1].C[O;D1]`               |
 
-## On depth and directionality
+## On Depth and Directionality
 
 Two complexity features that one might _expect_ to find in a SMARTS catalog turn out to be effectively absent across all 2'448 patterns.
 
@@ -199,7 +199,7 @@ Catalogs that DO use directional SMARTS — reaction templates, stereoisomer-spe
 
 If a downstream pipeline needs deeper-recursion or directional patterns, it should look at __reaction SMARTS__ (RDKit reaction templates use both heavily) or __pharmacophore feature definitions__ (`.fdef` files), not at alert catalogs.
 
-## What to look out for when matching
+## What to Look Out for When Matching
 
 These are the cost drivers and correctness pitfalls a substructure matcher will hit, drawn from the metrics above.
 
